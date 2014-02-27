@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 (function() {
+  "use strict";
+
   var bid = BrowserID,
       storage = bid.Storage,
       testHelpers = bid.TestHelpers,
@@ -37,20 +39,6 @@
     equal("key", id.priv, "email that was added is retrieved");
   });
 
-  test("addPrimaryEmail", function() {
-    storage.addPrimaryEmail("testuser@testuser.com");
-
-    var email = storage.getEmail("testuser@testuser.com");
-    equal(email.type, "primary", "email type set correctly");
-  });
-
-  test("addSecondaryEmail", function() {
-    storage.addSecondaryEmail("testuser@testuser.com");
-
-    var email = storage.getEmail("testuser@testuser.com");
-    equal(email.type, "secondary", "email type set correctly");
-  });
-
   test("removeEmail, getEmails", function() {
     storage.addEmail("testuser@testuser.com", {priv: "key"});
     storage.removeEmail("testuser@testuser.com");
@@ -70,6 +58,38 @@
     equal(error.message, "unknown email address", "removing an unknown email address");
   });
 
+  test("addEmail/getEmail/removeEmail with issuer", function() {
+    var email = "testuser@testuser.com";
+    var issuer = "fxos_issuer";
+
+    storage.addEmail(email, { created: new Date(), for_who: "fxos" }, issuer);
+
+    ok(storage.getEmail(email, issuer));
+    // There should be no email under the default namespace
+    ok(!storage.getEmail(email));
+
+    // add a default issuer email to see if namespacing worksto
+    storage.addEmail(email, { created: new Date() });
+
+    storage.removeEmail(email, issuer);
+    ok(!storage.getEmail(email, issuer));
+
+    // namespaced remove should not affect default issuer.
+    ok(storage.getEmail(email));
+  });
+
+  test("addEmail/getEmail/removeEmail with multiple forced issuers",
+      function() {
+    var email = "testuser@testuser.com";
+    var issuer = "fxos_issuer";
+    var issuer2 = "picl_issuer";
+
+    storage.addEmail(email, { created: new Date(), for_who: "fxos" }, issuer);
+    storage.addEmail(email, { for_who: "picl" }, issuer2);
+
+    equal(storage.getEmail(email, issuer).for_who, "fxos");
+    equal(storage.getEmail(email, issuer2).for_who, "picl");
+  });
 
   test("clear - there should be default values", function() {
     storage.addEmail("testuser@testuser.com", {priv: "key"});
@@ -174,25 +194,66 @@
     equal(storage.getReturnTo(), "http://some.domain/path", "setReturnTo/getReturnTo working as expected");
   });
 
-  test("signInEmail.set/.get/.remove - set, get, and remove the signInEmail", function() {
-    storage.signInEmail.set("testuser@testuser.com");
-    equal(storage.signInEmail.get(), "testuser@testuser.com", "correct email gotten");
-    storage.signInEmail.remove();
-    equal(typeof storage.signInEmail.get(), "undefined", "after remove, signInEmail is empty");
-  });
-
-  test("setLoggedIn, getLoggedIn, loggedInCount", function() {
+  test("site.set->logged_in, site.get->logged_in, loggedInCount", function() {
     var email = "testuser@testuser.com";
-    storage.addSecondaryEmail(email);
-    storage.setLoggedIn(TEST_ORIGIN, email);
-    equal(storage.getLoggedIn(TEST_ORIGIN), email, "correct email");
+    storage.addEmail(email, {});
+    storage.site.set(TEST_ORIGIN, "logged_in", email);
+    storage.site.set("http://another.domain", "logged_in", email);
 
-    storage.setLoggedIn("http://another.domain", email);
     equal(storage.loggedInCount(), 2, "correct logged in count");
 
     storage.removeEmail(email);
     equal(storage.loggedInCount(), 0, "after email removed, not logged in anywhere");
-    testHelpers.testUndefined(storage.getLoggedIn(TEST_ORIGIN), "sites with email no longer logged in");
+    testHelpers.testUndefined(storage.site.get(TEST_ORIGIN, "logged_in"), "sites with email no longer logged in");
+  });
+
+  test("idpVerification functions, set, get, clear", function() {
+    storage.idpVerification.set({
+      email: "testuser@testuser.com",
+      'native': true
+    });
+
+    var info = storage.idpVerification.get();
+    equal(info.email, "testuser@testuser.com");
+    equal(info['native'], true);
+
+    storage.idpVerification.clear();
+    info = storage.idpVerification.get();
+    testHelpers.testUndefined(info);
+  });
+
+  test("idpVerification - clear old info", function() {
+    var now = new Date().getTime();
+    // Set the start date to one second past the lifetime.
+    var expiredTime = now - storage.idpVerification.INFO_LIFESPAN_MS - 1;
+    var expiredDate = new Date();
+    expiredDate.setTime(expiredTime);
+    storage.idpVerification.set("expired", {
+      email: "expired@testuser.com",
+      created: expiredDate.toString()
+    });
+
+    sessionStorage.idpNonce = "hacked_in_for_testing";
+
+    storage.idpVerification.clear();
+    var info = storage.idpVerification.get("expired");
+    testHelpers.testUndefined(info);
+  });
+
+  test("rpRequest functions, set, get, clear", function() {
+    storage.rpRequest.set({
+      origin: "https://testuser.com",
+      params: {
+        returnTo: "/"
+      }
+    });
+
+    var rpRequestInfo = storage.rpRequest.get();
+    equal(rpRequestInfo.origin, "https://testuser.com");
+
+    storage.rpRequest.clear();
+    rpRequestInfo = storage.rpRequest.get();
+    testHelpers.testUndefined(rpRequestInfo);
   });
 
 }());

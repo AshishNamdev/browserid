@@ -5,89 +5,78 @@ BrowserID.Network = (function() {
   "use strict";
   /*globals require:true*/
 
-  var jwcrypto = require("./lib/jwcrypto"),
-      bid = BrowserID,
-      complete = bid.Helpers.complete,
+  var bid = BrowserID,
+      helpers = bid.Helpers,
+      complete = helpers.complete,
       context,
-      server_time,
-      domain_key_creation_time,
-      auth_status,
-      code_version,
-      userid,
-      time_until_delay,
       mediator = bid.Mediator,
-      xhr = bid.XHR,
-      post = xhr.post,
-      get = xhr.get,
+      XHR = bid.Modules.XHR,
+      NetworkContext = bid.Models.NetworkContext,
+      xhr,
+      // XXX get this out of here!
       storage = bid.Storage;
 
-  function setUserID(uid) {
-    userid = uid;
-
-    // TODO - Get this out of here and put it into user!
-
-    // when session context returns with an authenticated user, update localstorage
-    // to indicate we've seen this user on this device
-    if (userid) {
-      storage.usersComputer.setSeen(userid);
+  function post(options) {
+    if (!context) {
+      // If there is no context, go fetch it and then call this function
+      // recursively.
+      return withContext(post.curry(options), options.error);
     }
+
+    options.data = options.data || {};
+    options.data.csrf = context.getCsrfToken();
+    xhr.post(options);
   }
 
-  function onContextChange(msg, result) {
-    context = result;
-    server_time = {
-      remote: result.server_time,
-      local: (new Date()).getTime()
-    };
-    domain_key_creation_time = result.domain_key_creation_time;
-    auth_status = result.auth_level;
-    code_version = result.code_version;
-    setUserID(result.userid);
-
-    // seed the PRNG
-    jwcrypto.addEntropy(result.random_seed);
+  function get(options) {
+    xhr.get(options);
   }
 
-  function withContext(cb, onFailure) {
-    if(typeof context !== "undefined") cb(context);
-    else {
-      xhr.withContext(cb, onFailure);
+  function withContext(done, onFailure) {
+    if (context) return complete(done, context);
+
+    // session_context always checks for a javascript readable cookie,
+    // this allows our javascript code in the dialog and communication iframe
+    // to determine whether cookies are (partially) disabled.  See #2999 for
+    // more context.
+    // NOTE - the cookie is set here instead of cookiesEnabled because
+    // session_context is only ever called once per context session. We have
+    // to ensure the cookie is set for that single call.
+    try {
+      document.cookie = "can_set_cookies=1";
+    } catch(e) {
+      // If cookies are disabled, some browsers throw an exception. Ignore
+      // this, the backend will see that cookies are disabled.
     }
+
+    get({
+      url: "/wsapi/session_context",
+      success: function(result) {
+        setContext(result);
+        complete(done, context);
+      },
+      error: onFailure
+    });
+  }
+
+  function setContext(newContext) {
+    context = NetworkContext.create(newContext);
+
+    mediator.publish("context_info", newContext);
   }
 
   function clearContext() {
-    xhr.clearContext();
     var undef;
-    context = server_time = auth_status = userid = undef;
-  }
-
-  function handleAuthenticationResponse(type, onComplete, onFailure, status) {
-    try {
-      var authenticated = status.success;
-
-      if (typeof authenticated !== 'boolean') throw status;
-
-      // now update the userid which is set once the user is authenticated.
-      // this is used to key off client side state, like whether this user has
-      // confirmed ownership of this device
-      setUserID(status.userid);
-
-      // at this point we know the authentication status of the
-      // session, let's set it to perhaps save a network request
-      // (to fetch session context).
-      auth_status = authenticated && type;
-      complete(onComplete, authenticated);
-    } catch (e) {
-      onFailure("unexpected server response: " + e);
-    }
+    context = undef;
   }
 
   function stageAddressForVerification(data, wsapiName, onComplete, onFailure) {
     post({
       url: wsapiName,
       data: data,
-      success: function(status) {
-        complete(onComplete, status.success);
+      success: function(info) {
+        if (info.success) complete(onComplete, info);
+        else complete(onComplete, false);
       },
       error: function(info) {
         // 429 is throttling.
@@ -99,25 +88,18 @@ BrowserID.Network = (function() {
     });
   }
 
-  function handleAddressVerifyCheckResponse(onComplete, status, textStatus, jqXHR) {
-    if (status.status === 'complete' && status.userid)
-      setUserID(status.userid);
-    complete(onComplete, status.status);
-  }
-
   function completeAddressVerification(wsapiName, token, password, onComplete, onFailure) {
+      var data = {
+        token: token
+      };
+
+      // Only send the password along if it was actually given
+      if (password !== null) data.pass = password;
+
       post({
         url: wsapiName,
-        data: {
-          token: token,
-          pass: password
-        },
-        success: function(status, textStatus, jqXHR) {
-          // If the user has successfully completed an address verification,
-          // they are authenticated to the password status.
-          if (status.success) auth_status = "password";
-          complete(onComplete, status.success);
-        },
+        data: data,
+        success: onComplete,
         error: onFailure
       });
 
@@ -129,8 +111,14 @@ BrowserID.Network = (function() {
      * @method init
      */
     init: function(config) {
-      // Any time the context info changes, we want to know about it.
-      mediator.subscribe('context_info', onContextChange);
+      config = config || {};
+
+      if (config.xhr) {
+        xhr = config.xhr;
+      } else {
+        xhr = XHR.create();
+        xhr.init({ time_until_delay: bid.XHR_DELAY_MS });
+      }
 
       // BEGIN TEST API
       this.cookiesEnabledOverride = config && config.cookiesEnabledOverride;
@@ -148,15 +136,17 @@ BrowserID.Network = (function() {
      * with status parameter - true if authenticated, false otw.
      * @param {function} [onFailure] - called on XHR failure
      */
-    authenticate: function(email, password, onComplete, onFailure) {
+    authenticate: function(email, password, allowUnverified,
+        onComplete, onFailure) {
       post({
         url: "/wsapi/authenticate_user",
         data: {
           email: email,
           pass: password,
-          ephemeral: !storage.usersComputer.confirmed(email)
+          ephemeral: !storage.usersComputer.confirmed(email),
+          allowUnverified: allowUnverified
         },
-        success: handleAuthenticationResponse.curry("password", onComplete, onFailure),
+        success: onComplete,
         error: onFailure
       });
     },
@@ -177,30 +167,23 @@ BrowserID.Network = (function() {
           assertion: assertion,
           ephemeral: !storage.usersComputer.confirmed(email)
         },
-        success: handleAuthenticationResponse.curry("assertion", onComplete, onFailure),
+        success: onComplete,
         error: onFailure
       });
     },
 
-    /**
-     * Check whether a user is currently logged in.
-     * @method checkAuth
-     * @param {function} [onComplete] - called with one
-     * boolean parameter, whether the user is authenticated.
-     * @param {function} [onFailure] - called on XHR failure.
-     */
-    checkAuth: function(onComplete, onFailure) {
-      withContext(function() {
-        try {
-          complete(onComplete, auth_status);
-        } catch(e) {
-          complete(onFailure, e.toString());
-        }
-      }, onFailure);
-    },
+    withContext: withContext,
 
-    withContext: function(onComplete, onFailure) {
-      withContext(onComplete, onFailure);
+    setContext: function(field, value) {
+      if (arguments.length === 1) {
+        if (!helpers.isObject(field)) throw new Error("invalid context");
+
+        // an object was passed in for the context. Used for testing.
+        setContext(field);
+      }
+      else {
+        if (context) context[field] = value;
+      }
     },
 
     /**
@@ -220,23 +203,13 @@ BrowserID.Network = (function() {
     logout: function(onComplete, onFailure) {
       post({
         url: "/wsapi/logout",
-        success: function() {
-          // assume the logout request is successful and
-          // log the user out.  There is no need to reset the
-          // CSRF token.
-          // FIXME: we should return a confirmation that the
-          // user was successfully logged out.
-          auth_status = false;
-          setUserID(undefined);
-          complete(onComplete);
-        },
+        success: onComplete,
         error: function(info, xhr, textStatus) {
           if (info.network.status === 400) {
-            auth_status = false;
             complete(onComplete);
           }
           else {
-            onFailure && onFailure(info);
+            complete(onFailure, info);
           }
         }
       });
@@ -247,16 +220,20 @@ BrowserID.Network = (function() {
      * @method createUser
      * @param {string} email
      * @param {string} password
-     * @param {string} origin - site user is trying to sign in to.
+     * @param {object} rpInfo - info about the RP user is signing in to
      * @param {function} [onComplete] - Callback to call when complete.
      * @param {function} [onFailure] - Called on XHR failure.
      */
-    createUser: function(email, password, origin, onComplete, onFailure) {
+    createUser: function(email, password, rpInfo, onComplete, onFailure) {
       var postData = {
         email: email,
         pass: password,
-        site : origin
+        site : rpInfo.getOrigin(),
+        allowUnverified: rpInfo.getAllowUnverified(),
+        backgroundColor: rpInfo.getBackgroundColor(),
+        siteLogo: rpInfo.getEmailableSiteLogo()
       };
+
       stageAddressForVerification(postData, "/wsapi/stage_user", onComplete, onFailure);
     },
 
@@ -292,7 +269,7 @@ BrowserID.Network = (function() {
     checkUserRegistration: function(email, onComplete, onFailure) {
       get({
         url: "/wsapi/user_creation_status?email=" + encodeURIComponent(email),
-        success: handleAddressVerifyCheckResponse.curry(onComplete),
+        success: onComplete,
         error: onFailure
       });
     },
@@ -322,16 +299,16 @@ BrowserID.Network = (function() {
      * Request a password reset for the given email address.
      * @method requestPasswordReset
      * @param {string} email
-     * @param {string} password
-     * @param {string} origin
+     * @param {object} rpInfo - info about the RP user is signing in to
      * @param {function} [onComplete] - Callback to call when complete.
      * @param {function} [onFailure] - Called on XHR failure.
      */
-    requestPasswordReset: function(email, password, origin, onComplete, onFailure) {
+    requestPasswordReset: function(email, rpInfo, onComplete, onFailure) {
       var postData = {
         email: email,
-        pass: password,
-        site : origin
+        site : rpInfo.getOrigin(),
+        backgroundColor: rpInfo.getBackgroundColor(),
+        siteLogo: rpInfo.getEmailableSiteLogo()
       };
       stageAddressForVerification(postData, "/wsapi/stage_reset", onComplete, onFailure);
     },
@@ -355,7 +332,7 @@ BrowserID.Network = (function() {
     checkPasswordReset: function(email, onComplete, onFailure) {
       get({
         url: "/wsapi/password_reset_status?email=" + encodeURIComponent(email),
-        success: handleAddressVerifyCheckResponse.curry(onComplete),
+        success: onComplete,
         error: onFailure
       });
     },
@@ -364,14 +341,16 @@ BrowserID.Network = (function() {
      * Stage an email reverification.
      * @method requestEmailReverify
      * @param {string} email
-     * @param {string} origin - site user is trying to sign in to.
+     * @param {object} rpInfo - info about the RP user is signing in to
      * @param {function} [onComplete] - Callback to call when complete.
      * @param {function} [onFailure] - Called on XHR failure.
      */
-    requestEmailReverify: function(email, origin, onComplete, onFailure) {
+    requestEmailReverify: function(email, rpInfo, onComplete, onFailure) {
       var postData = {
         email: email,
-        site : origin
+        site : rpInfo.getOrigin(),
+        backgroundColor: rpInfo.getBackgroundColor(),
+        siteLogo: rpInfo.getEmailableSiteLogo()
       };
       stageAddressForVerification(postData, "/wsapi/stage_reverify", onComplete, onFailure);
     },
@@ -390,28 +369,7 @@ BrowserID.Network = (function() {
     checkEmailReverify: function(email, onComplete, onFailure) {
       get({
         url: "/wsapi/email_reverify_status?email=" + encodeURIComponent(email),
-        success: handleAddressVerifyCheckResponse.curry(onComplete),
-        error: onFailure
-      });
-    },
-
-
-    /**
-     * Set the password of the current user.
-     * @method setPassword
-     * @param {string} password - new password.
-     * @param {function} [onComplete] - Callback to call when complete.
-     * @param {function} [onFailure] - Called on XHR failure.
-     */
-    setPassword: function(password, onComplete, onFailure) {
-      post({
-        url: "/wsapi/set_password",
-        data: {
-          password: password
-        },
-        success: function(status) {
-          complete(onComplete, status.success);
-        },
+        success: onComplete,
         error: onFailure
       });
     },
@@ -454,9 +412,7 @@ BrowserID.Network = (function() {
           oldpass: oldPassword,
           newpass: newPassword
         },
-        success: function(status) {
-          complete(onComplete, status.success);
-        },
+        success: onComplete,
         error: onFailure
       });
     },
@@ -501,15 +457,17 @@ BrowserID.Network = (function() {
      * @method addSecondaryEmail
      * @param {string} email
      * @param {string} password
-     * @param {string} origin
+     * @param {object} rpInfo - info about the RP user is signing in to
      * @param {function} [onComplete] - called when complete.
      * @param {function} [onFailure] - called on xhr failure.
      */
-    addSecondaryEmail: function(email, password, origin, onComplete, onFailure) {
+    addSecondaryEmail: function(email, password, rpInfo, onComplete, onFailure) {
       var postData = {
         email: email,
         pass: password,
-        site : origin
+        site : rpInfo.getOrigin(),
+        backgroundColor: rpInfo.getBackgroundColor(),
+        siteLogo: rpInfo.getEmailableSiteLogo()
       };
       stageAddressForVerification(postData, "/wsapi/stage_email", onComplete, onFailure);
     },
@@ -523,7 +481,7 @@ BrowserID.Network = (function() {
     checkEmailRegistration: function(email, onComplete, onFailure) {
       get({
         url: "/wsapi/email_addition_status?email=" + encodeURIComponent(email),
-        success: handleAddressVerifyCheckResponse.curry(onComplete),
+        success: onComplete,
         error: onFailure
       });
     },
@@ -552,6 +510,7 @@ BrowserID.Network = (function() {
      * (is it a primary or a secondary)
      * @method addressInfo
      * @param {string} email - Email address to check.
+     * @param {string} issuer - Force a specific Issuer by specifing a domain. null for default.
      * @param {function} [onComplete] - Called with an object on success,
      *   containing these properties:
      *     type: <secondary|primary>
@@ -560,9 +519,11 @@ BrowserID.Network = (function() {
      *     prov: string - url to embed for silent provisioning - present if type is secondary
      * @param {function} [onFailure] - Called on XHR failure.
      */
-    addressInfo: function(email, onComplete, onFailure) {
+    addressInfo: function(email, issuer, onComplete, onFailure) {
+      issuer = issuer || 'default';
       get({
-        url: "/wsapi/address_info?email=" + encodeURIComponent(email),
+        url: "/wsapi/address_info?email=" + encodeURIComponent(email) +
+             "&issuer=" + encodeURIComponent(issuer),
         success: function(data, textStatus, xhr) {
           complete(onComplete, data);
         },
@@ -594,14 +555,22 @@ BrowserID.Network = (function() {
      * Certify the public key for the email address.
      * @method certKey
      */
-    certKey: function(email, pubkey, onComplete, onFailure) {
+    certKey: function(email, pubkey, forceIssuer, allowUnverified,
+        onComplete, onFailure) {
+      var postData = {
+        email: email,
+        pubkey: pubkey.serialize(),
+        ephemeral: !storage.usersComputer.confirmed(email),
+        allowUnverified: allowUnverified
+      };
+
+      if (forceIssuer !== "default") {
+        postData.forceIssuer = forceIssuer;
+      }
+
       post({
         url: "/wsapi/cert_key",
-        data: {
-          email: email,
-          pubkey: pubkey.serialize(),
-          ephemeral: !storage.usersComputer.confirmed(email)
-        },
+        data: postData,
         success: onComplete,
         error: onFailure
       });
@@ -615,85 +584,10 @@ BrowserID.Network = (function() {
       get({
         url: "/wsapi/list_emails",
         success: function(emails) {
-          // TODO - Put this into user.js or storage.js when emails are synced/saved to
-          // storage.
-          // update our local storage map of email addresses to user ids
-          if (userid) {
-            storage.updateEmailToUserIDMapping(userid, _.keys(emails));
-          }
-
-          onComplete && onComplete(emails);
+          complete(onComplete, emails.emails);
         },
         error: onFailure
       });
-    },
-
-    /**
-     * TODO - move this into user.
-     * Return the user's userid, which will an integer if the user
-     * is authenticated, undefined otherwise.
-     *
-     * @method userid
-     */
-    userid: function() {
-      return userid;
-    },
-
-    /**
-     * Get the current time on the server in the form of a
-     * date object.
-     *
-     * Note: this function will perform a network request if
-     * during this session /wsapi/session_context has not
-     * been called.
-     *
-     * @method serverTime
-     */
-    serverTime: function(onComplete, onFailure) {
-      withContext(function() {
-        try {
-          if (!server_time) throw new Error("can't get server time!");
-          var offset = (new Date()).getTime() - server_time.local;
-          complete(onComplete, new Date(offset + server_time.remote));
-        } catch(e) {
-          complete(onFailure, e.toString());
-        }
-      }, onFailure);
-    },
-
-    /**
-     * Get the time at which the domain key was last updated.
-     *
-     * Note: this function will perform a network request if
-     * during this session /wsapi/session_context has not
-     * been called.
-     *
-     * @method domainKeyCreationTime
-     */
-    domainKeyCreationTime: function(onComplete, onFailure) {
-      withContext(function() {
-        try {
-          if (!domain_key_creation_time) throw new Error("can't get domain key creation time!");
-          complete(onComplete, new Date(domain_key_creation_time));
-        } catch(e) {
-          complete(onFailure, e.toString());
-        }
-      }, onFailure);
-    },
-
-    /**
-     * Get the most recent code version
-     *
-     * Note: this function will perform a network request if
-     * during this session /wsapi/session_context has not
-     * been called.
-     *
-     * @method codeVersion
-     */
-    codeVersion: function(onComplete, onFailure) {
-      withContext(function() {
-        complete(onComplete, code_version);
-      }, onFailure);
     },
 
     /**
@@ -701,32 +595,21 @@ BrowserID.Network = (function() {
      * @method cookiesEnabled
      */
     cookiesEnabled: function(onComplete, onFailure) {
-      var enabled;
-      try {
-        // NOTE - The Android 3.3 and 4.0 default browsers will still pass
-        // this check.  This causes the Android browsers to only display the
-        // cookies diabled error screen only after the user has entered and
-        // submitted input.
-        // http://stackoverflow.com/questions/8509387/android-browser-not-respecting-cookies-disabled
+      withContext(function(context) {
+        // session_context always checks for a javascript readable cookie,
+        // this allows our javascript code in the dialog and communication
+        // iframe to determine whether cookies are (partially) disabled.
+        // See #2999 for more context.
+        var enabled = context.areCookiesEnabled();
 
-        document.cookie = "__cookiesEnabledCheck=1";
-        enabled = document.cookie.indexOf("__cookiesEnabledCheck") > -1;
+        // BEGIN TESTING API
+        if (typeof Network.cookiesEnabledOverride === "boolean") {
+          enabled = Network.cookiesEnabledOverride;
+        }
+        // END TESTING API
 
-        // expire the cookie NOW by setting its expires date to yesterday.
-        var expires = new Date();
-        expires.setDate(expires.getDate() - 1);
-        document.cookie = "__cookiesEnabledCheck=; expires=" + expires.toGMTString();
-      } catch(e) {
-        enabled = false;
-      }
-
-      // BEGIN TESTING API
-      if (typeof Network.cookiesEnabledOverride === "boolean") {
-        enabled = Network.cookiesEnabledOverride;
-      }
-      // END TESTING API
-
-      complete(onComplete, enabled);
+        complete(onComplete, enabled);
+      }, onFailure);
     },
 
     /**
@@ -737,18 +620,73 @@ BrowserID.Network = (function() {
      * @param {function} [onFailure] - Called on XHR failure.
      */
     prolongSession: function(onComplete, onFailure) {
-      Network.checkAuth(function(authenticated) {
-        if(authenticated) {
-          post({
-            url: "/wsapi/prolong_session",
-            success: onComplete,
-            error: onFailure
-          });
-        }
-        else {
-          complete(onFailure, "user not authenticated");
-        }
-      }, onFailure);
+      post({
+        url: "/wsapi/prolong_session",
+        success: onComplete,
+        error: onFailure
+      });
+    },
+
+    /**
+     * Mark the transition of this email as having been completed.
+     * @method usedAddressAsPrimary
+     * @param {string} [email] - The email that transitioned.
+     * @param {function} [onComplete] - Called whenever complete.
+     * @param {function} [onFailure] - Called on XHR failure.
+     */
+    usedAddressAsPrimary: function(email, onComplete, onFailure) {
+      post({
+        url: "/wsapi/used_address_as_primary",
+        data: { email: email },
+        success: onComplete,
+        error: onFailure
+      });
+    },
+
+    /**
+     * Request that an account transitions from a primary to a secondary. Used
+     * whenever a user has only primary addresses and one of the addresses
+     * belongs to an IdP which converts to a secondary.
+     * @method requestTransitionToSecondary
+     * @param {string} email
+     * @param {string} password
+     * @param {object} rpInfo - info about the RP user is signing in to
+     * @param {function} [onComplete] - Callback to call when complete.
+     * @param {function} [onFailure] - Called on XHR failure.
+     */
+    requestTransitionToSecondary: function(email, password, rpInfo, onComplete, onFailure) {
+      var postData = {
+        email: email,
+        pass: password,
+        site : rpInfo.getOrigin(),
+        backgroundColor: rpInfo.getBackgroundColor(),
+        siteLogo: rpInfo.getEmailableSiteLogo()
+      };
+      stageAddressForVerification(postData, "/wsapi/stage_transition", onComplete, onFailure);
+    },
+
+    /**
+     * Complete transition to secondary
+     * @method completeTransitionToSecondary
+     * @param {string} token - token to register for.
+     * @param {string} password
+     * @param {function} [onComplete] - Called when complete.
+     * @param {function} [onFailure] - Called on XHR failure.
+     */
+    completeTransitionToSecondary: completeAddressVerification.curry("/wsapi/complete_transition"),
+
+    /**
+     * Check the registration status of a transition to secondary
+     * @method checkTransitionToSecondary
+     * @param {function} [onsuccess] - called when complete.
+     * @param {function} [onfailure] - called on xhr failure.
+     */
+    checkTransitionToSecondary: function(email, onComplete, onFailure) {
+      get({
+        url: "/wsapi/transition_status?email=" + encodeURIComponent(email),
+        success: onComplete,
+        error: onFailure
+      });
     }
   };
 

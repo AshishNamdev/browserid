@@ -1,6 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 BrowserID.Modules.Actions = (function() {
   "use strict";
 
@@ -12,8 +13,7 @@ BrowserID.Modules.Actions = (function() {
       mediator = bid.Mediator,
       dialogHelpers = bid.Helpers.Dialog,
       runningService,
-      onsuccess,
-      onerror;
+      onsuccess;
 
   function startService(name, options, reported_service_name) {
     mediator.publish("service", { name: reported_service_name || name });
@@ -35,7 +35,7 @@ BrowserID.Modules.Actions = (function() {
     var controller = startService("check_registration", {
       verifier: verifier,
       verificationMessage: message,
-      siteName: options.siteName,
+      rpInfo: options.rpInfo,
       email: options.email
     });
     controller.startCheck();
@@ -48,7 +48,6 @@ BrowserID.Modules.Actions = (function() {
       data = data || {};
 
       onsuccess = data.onsuccess;
-      onerror = data.onerror;
 
       sc.start.call(self, data);
 
@@ -91,16 +90,16 @@ BrowserID.Modules.Actions = (function() {
       startService("authenticate", info);
     },
 
-    doAuthenticateWithRequiredEmail: function(info) {
-      startService("required_email", info);
-    },
-
-    doResetPassword: function(info) {
-      startService("set_password", _.extend(info, { password_reset: true }), "reset_password");
+    doAuthenticateWithUnverifiedEmail: function(info) {
+      var self = this;
+      dialogHelpers.authenticateUser.call(this, info.email, info.password,
+          function() {
+        self.publish("authenticated", info);
+      });
     },
 
     doStageResetPassword: function(info) {
-      dialogHelpers.resetPassword.call(this, info.email, info.password, info.ready);
+      dialogHelpers.resetPassword.call(this, info.email, info.ready);
     },
 
     doConfirmResetPassword: function(info) {
@@ -115,15 +114,22 @@ BrowserID.Modules.Actions = (function() {
       startRegCheckService.call(this, info, "waitForEmailReverifyComplete", "reverify_email_confirmed");
     },
 
-    doAssertionGenerated: function(info) {
-      // Clear onerror before the call to onsuccess - the code to onsuccess
-      // calls window.close, which would trigger the onerror callback if we
-      // tried this afterwards.
-      this.hideWait();
-      dialogHelpers.animateClose(function() {
-        onerror = null;
-        if(onsuccess) onsuccess(info);
-      });
+    doStageTransitionToSecondary: function(info) {
+      dialogHelpers.transitionToSecondary.call(this, info.email,
+          info.password, info.ready);
+    },
+
+    doConfirmTransitionToSecondary: function(info) {
+      startRegCheckService.call(this, info,
+          "waitForTransitionToSecondaryComplete",
+          "transition_to_secondary_confirmed");
+    },
+
+    doCompleteSignIn: function(info) {
+      info.ready = function() {
+        onsuccess(info);
+      };
+      startService("complete_sign_in", info);
     },
 
     doNotMe: function() {
@@ -131,9 +137,13 @@ BrowserID.Modules.Actions = (function() {
       user.logoutUser(self.publish.bind(self, "logged_out"), self.getErrorDialog(errors.logoutUser));
     },
 
-    doCheckAuth: function() {
+    doCheckAuth: function(info) {
       var self=this;
-      user.checkAuthenticationAndSync(function(authenticated) {
+
+      info = info || {};
+      user.checkAuthenticationAndSync(function (authenticated) {
+        // Does the RP want us to force the user to authenticate?
+        authenticated = info.forceAuthentication ? false : authenticated;
         self.publish("authentication_checked", {
           authenticated: authenticated
         });
@@ -148,12 +158,16 @@ BrowserID.Modules.Actions = (function() {
       startService("verify_primary_user", info);
     },
 
-    doCannotVerifyRequiredPrimary: function(info) {
-      this.renderError("cannot_verify_required_email", info);
-    },
-
     doPrimaryUserProvisioned: function(info) {
       startService("primary_user_provisioned", info);
+    },
+
+    doPrimaryUserNotProvisioned: function(info) {
+      startService("primary_user_not_provisioned", info);
+    },
+
+    doPrimaryOffline: function(info) {
+      startService("primary_offline", info);
     },
 
     doIsThisYourComputer: function(info) {
@@ -170,6 +184,6 @@ BrowserID.Modules.Actions = (function() {
   });
 
   sc = Module.sc;
-
   return Module;
+
 }());

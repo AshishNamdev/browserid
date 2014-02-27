@@ -6,35 +6,58 @@
 
 require('../lib/baseExceptions').addExceptionHandler();
 
-const
-fs = require('fs'),
-path = require('path'),
-url = require('url'),
-http = require('http'),
-urlparse = require('urlparse'),
-express = require('express');
+const fs = require('fs');
+const path = require('path');
+const url = require('url');
+const http = require('http');
 
-const
-assets = require('../lib/static_resources').all,
-cachify = require('connect-cachify'),
-i18n = require('../lib/i18n.js'),
-wsapi = require('../lib/wsapi.js'),
-httputils = require('../lib/httputils.js'),
-db = require('../lib/db.js'),
-config = require('../lib/configuration.js'),
-heartbeat = require('../lib/heartbeat.js'),
-logger = require('../lib/logging.js').logger,
-views = require('../lib/static/views.js');
+const cachify = require('connect-cachify');
+const connect_fonts = require('connect-fonts');
+const connect_fonts_feurasans = require('connect-fonts-feurasans');
+const connect_fonts_opensans = require('connect-fonts-opensans');
+const express = require('express');
+const hood = require('hood');
+const i18n = require('i18n-abide');
+const urlparse = require('urlparse');
 
-var app = undefined;
+const addP3PHeader = require('../lib/p3p.js');
+const assets = require('../lib/static_resources').all;
+const config = require('../lib/configuration.js');
+const db = require('../lib/db.js');
+const heartbeat = require('../lib/heartbeat.js');
+const httputils = require('../lib/httputils.js');
+const i18n_check = require('../lib/i18n_client_check');
+const logger = require('../lib/logging/logging.js').logger;
+const proxySecure = require('../lib/proxy-secure');
+const shutdown = require('../lib/shutdown.js');
+const statsd = require("../lib/logging/middleware/statsd");
+const toobusy = require('../lib/busy_middleware.js');
+const wsapi = require('../lib/wsapi.js');
+const views = require('../lib/static/views.js');
 
-app = express.createServer();
+var app = express.createServer();
 
 logger.info("static starting up");
+
+if (config.get('env') === 'production') {
+  logger.info('node.js version: ' + process.version + ' at ' + process.execPath);
+  logger.info('configuration: ', JSON.stringify(JSON.parse(config.toString())));
+}
 
 // Setup health check / heartbeat middleware.
 // This is in front of logging on purpose.  see issue #537
 heartbeat.setup(app);
+
+// block requests when overloaded
+app.use(toobusy);
+
+// cover our head
+app.use(proxySecure());
+app.use(hood({
+  csp: config.get('csp'),
+  hsts: config.get('hsts'),
+  xframe: config.get('x_frame_options')
+}));
 
 // logging!  all requests other than __heartbeat__ are logged
 app.use(express.logger({
@@ -55,21 +78,12 @@ app.use(i18n.abide({
   disable_locale_check: config.get('disable_locale_check')
 }));
 
-var statsd_config = config.get('statsd');
-if (statsd_config && statsd_config.enabled) {
-  logger_statsd = require("connect-logger-statsd");
-  app.use(logger_statsd({
-    host: statsd_config.hostname || "localhost",
-    port: statsd_config.port || 8125,
-    prefix: statsd_config.prefix || "browserid.static."
-  }));
-}
-// #4 - prevent framing of everything.  content underneath that needs to be
-// framed must explicitly remove the x-frame-options
-app.use(function(req, resp, next) {
-  resp.setHeader('x-frame-options', config.get('x_frame_options'));
-  next();
-});
+i18n_check();
+
+app.use(statsd());
+
+// Add P3P headers to please IE8
+app.use(addP3PHeader);
 
 var static_root = path.join(__dirname, "..", "resources", "static");
 
@@ -78,11 +92,18 @@ var static_root = path.join(__dirname, "..", "resources", "static");
 //  with https://diresworb.org)
 config.performSubstitution(app);
 
+var font_middleware = connect_fonts.setup({
+  fonts: [ connect_fonts_opensans, connect_fonts_feurasans ],
+  allow_origin: config.get('public_url'),
+  ua: 'all'
+});
+
 app.use(cachify.setup(assets(config.get('supported_languages')),
         {
           prefix: config.get('cachify_prefix'),
           production: config.get('use_minified_resources'),
           root: static_root,
+          url_to_paths: connect_fonts.urlToPaths
         }));
 
 // #9 - handle views for dynamicish content
@@ -100,9 +121,24 @@ app.use(function(req, res, next) {
   next();
 });
 
+app.use(font_middleware);
+
+// catch urls that express can't handle (issue #2887)
+app.use(function(req, res, next) {
+  try {
+    decodeURIComponent(req.url);
+    next();
+  } catch (e) {
+    logger.info('invalid url requested: ' + req.url);
+    httputils.notFound(res);
+  }
+});
+
 app.use(express.static(static_root));
 
 var bindTo = config.get('bind_to');
 app.listen(bindTo.port, bindTo.host, function() {
   logger.info("running on http://" + app.address().address + ":" + app.address().port);
 });
+
+shutdown.handleTerminationSignals(app, toobusy.shutdown);

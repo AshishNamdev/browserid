@@ -17,12 +17,19 @@
   // checking for IE8 or above
   function isInternetExplorer() {
     var rv = -1; // Return value assumes failure.
+    var ua = navigator.userAgent;
     if (navigator.appName === 'Microsoft Internet Explorer') {
-      var ua = navigator.userAgent;
       var re = new RegExp("MSIE ([0-9]{1,}[\.0-9]{0,})");
       if (re.exec(ua) != null)
         rv = parseFloat(RegExp.$1);
     }
+    else if (ua.indexOf("Trident") > -1) {
+      var re = new RegExp("rv:([0-9]{2,2}[\.0-9]{0,})");
+      if (re.exec(ua) !== null) {
+        rv = parseFloat(RegExp.$1);
+      }
+    }
+
     return rv >= 8;
   }
 
@@ -34,7 +41,7 @@
       var userAgent = navigator.userAgent;
       return (userAgent.indexOf('Fennec/') != -1) ||  // XUL
              (userAgent.indexOf('Firefox/') != -1 && userAgent.indexOf('Android') != -1);   // Java
-    } catch(e) {};
+    } catch(e) {}
     return false;
   }
 
@@ -56,10 +63,10 @@
   function findRelay() {
     var loc = window.location;
     var frames = window.opener.frames;
-    var origin = loc.protocol + '//' + loc.host;
     for (var i = frames.length - 1; i >= 0; i--) {
       try {
-        if (frames[i].location.href.indexOf(origin) === 0 &&
+        if (frames[i].location.protocol === window.location.protocol &&
+            frames[i].location.host === window.location.host &&
             frames[i].name === RELAY_FRAME_NAME)
         {
           return frames[i];
@@ -129,12 +136,26 @@
 
         if (!messageTarget) messageTarget = w;
 
+        // lets listen in case the window blows up before telling us
+        var closeInterval = setInterval(function() {
+          if (w && w.closed) {
+            cleanup();
+            if (cb) {
+              cb('unknown closed window');
+              cb = null;
+            }
+          }
+        }, 500);
+
         var req = JSON.stringify({a: 'request', d: opts.params});
 
         // cleanup on unload
         function cleanup() {
           if (iframe) document.body.removeChild(iframe);
           iframe = undefined;
+          if (closeInterval) closeInterval = clearInterval(closeInterval);
+          removeListener(window, 'message', onMessage);
+          removeListener(window, 'unload', cleanup);
           if (w) {
             try {
               w.close();
@@ -150,17 +171,17 @@
         addListener(window, 'unload', cleanup);
 
         function onMessage(e) {
+          if (e.origin !== origin) { return; }
           try {
             var d = JSON.parse(e.data);
             if (d.a === 'ready') messageTarget.postMessage(req, origin);
             else if (d.a === 'error') {
+              cleanup();
               if (cb) {
                 cb(d.d);
                 cb = null;
               }
             } else if (d.a === 'response') {
-              removeListener(window, 'message', onMessage);
-              removeListener(window, 'unload', cleanup);
               cleanup();
               if (cb) {
                 cb(null, d.d);

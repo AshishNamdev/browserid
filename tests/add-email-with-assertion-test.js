@@ -16,7 +16,8 @@ config = require('../lib/configuration.js'),
 jwcrypto = require('jwcrypto'),
 http = require('http'),
 querystring = require('querystring'),
-path = require("path");
+path = require("path"),
+secondary = require("./lib/secondary");
 
 var suite = vows.describe('auth-with-assertion');
 
@@ -118,32 +119,16 @@ suite.addBatch({
 
 // create a new account via the api with
 suite.addBatch({
-  "stage an account": {
-    topic: wsapi.post('/wsapi/stage_user', {
-      email: TEST_FIRST_ACCT,
-      pass: 'fakepass',
-      site:'http://fakesite.com:652'
-    }),
-    "works": function(err, r) {
-      assert.strictEqual(r.code, 200);
+  "creating a new secondary account": {
+    topic: function() {
+      secondary.create({
+        email: TEST_FIRST_ACCT,
+        pass: 'fakepass',
+        site:'http://fakesite.com:652'
+      }, this.callback);
     },
-    "and a token": {
-      topic: function() {
-        start_stop.waitForToken(this.callback);
-      },
-      "is obtained": function (t) {
-        assert.strictEqual(typeof t, 'string');
-      },
-      "can be used": {
-        topic: function(token) {
-          wsapi.post('/wsapi/complete_user_creation', { token: token }).call(this);
-        },
-        "to verify email ownership": function(err, r) {
-          assert.equal(r.code, 200);
-          assert.strictEqual(JSON.parse(r.body).success, true);
-          token = undefined;
-        }
-      }
+    "succeeds": function(err) {
+      assert.isNull(err);
     }
   }
 });
@@ -162,7 +147,6 @@ suite.addBatch({
     }
   }
 });
-
 
 // now create a lame cert: valid signature by the wrong party
 const OTHER_EMAIL = 'otheruser@other.domain'; // *not* TEST_DOMAIN
@@ -236,13 +220,35 @@ suite.addBatch({
       assert.strictEqual(r.code, 200);
     },
     "returns an object with what we'd expect": function(err, r) {
-      var respObj = JSON.parse(r.body);
-      var emails = Object.keys(respObj);
+      var emails = JSON.parse(r.body).emails;
       assert.strictEqual(emails.length, 2)
       assert.ok(emails.indexOf(TEST_EMAIL) != -1);
       assert.ok(emails.indexOf(TEST_FIRST_ACCT) != -1);
-      assert.equal(respObj[TEST_EMAIL].type, "primary");
-      assert.equal(respObj[TEST_FIRST_ACCT].type, "secondary");
+    }
+  },
+  "address info for TEST_EMAIL": {
+    topic: wsapi.get('/wsapi/address_info', {
+      email: TEST_EMAIL
+    }),
+    "returns type of primary": function(e, r) {
+      assert.isNull(e);
+      var r = JSON.parse(r.body);
+      assert.equal(r.type, "primary");
+      assert.equal(r.issuer, TEST_DOMAIN);
+      assert.equal(r.state, "known");
+      assert.isString(r.auth);
+      assert.isString(r.prov);
+    }
+  },
+  "address info for TEST_FIRST_ACCT": {
+    topic: wsapi.get('/wsapi/address_info', {
+      email: TEST_FIRST_ACCT
+    }),
+    "returns type of primary": function(e, r) {
+      assert.isNull(e);
+      var r = JSON.parse(r.body);
+      assert.equal(r.type, "secondary");
+      assert.equal(r.state, "known");
     }
   }
 });

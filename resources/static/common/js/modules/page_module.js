@@ -13,7 +13,9 @@ BrowserID.Modules.PageModule = (function() {
       dom = bid.DOM,
       screens = bid.Screens,
       helpers = bid.Helpers,
+      complete = helpers.complete,
       cancelEvent = helpers.cancelEvent,
+      CANCEL_DIALOG_SELECTOR = ".cancelDialog",
       sc;
 
    function onSubmit() {
@@ -23,6 +25,12 @@ BrowserID.Modules.PageModule = (function() {
      }
      return false;
    }
+
+  function cancelDialog(done) {
+    /*jshint validthis: true*/
+    this.publish("cancel");
+    complete(done);
+  }
 
   function showScreen(screen, template, vars, oncomplete) {
     screen.show(template, vars);
@@ -45,23 +53,16 @@ BrowserID.Modules.PageModule = (function() {
       sc.start.call(self, options);
 
       self.bind("form", "submit", cancelEvent(onSubmit));
+      self.click(CANCEL_DIALOG_SELECTOR, cancelDialog);
     },
 
-    stop: function() {
-      dom.removeClass("body", "waiting");
-      sc.stop.call(this);
-    },
-
-    renderDialog: function(template, data) {
+    renderForm: function(template, data) {
       var self=this;
-
-      self.hideWait();
-      self.hideError();
-      self.hideDelay();
 
       dom.removeClass("body", "rptospp");
 
       screens.form.show(template, data);
+      self.hideWarningScreens();
       dom.focus("input:visible:not(:disabled):eq(0)");
       // XXX jQuery.  bleck.
       if($("*:focus").length === 0) {
@@ -69,14 +70,34 @@ BrowserID.Modules.PageModule = (function() {
       }
     },
 
+    // the laoding wait, error and delay screens make up the warning screens.
+    renderLoad: showScreen.curry(screens.load),
+    hideLoad: hideScreen.curry(screens.load),
+
+    // the wait, error and delay screens make up the warning screens.
     renderWait: showScreen.curry(screens.wait),
     hideWait: hideScreen.curry(screens.wait),
 
-    renderError: showScreen.curry(screens.error),
+    renderError: function(template, info, oncomplete) {
+      this.publish('error_screen', info);
+      return showScreen.call(this, screens.error, template, info, oncomplete);
+    },
     hideError: hideScreen.curry(screens.error),
 
     renderDelay: showScreen.curry(screens.delay),
     hideDelay: hideScreen.curry(screens.delay),
+
+    /**
+     * Hides the warning screens
+     * @method hideWarningScreens
+     */
+    hideWarningScreens: function() {
+      var self=this;
+      self.hideWait();
+      self.hideError();
+      self.hideDelay();
+      self.hideLoad();
+    },
 
     /**
      * Validate the form, if returns false when called, submit will not be
@@ -114,7 +135,10 @@ BrowserID.Modules.PageModule = (function() {
     getErrorDialog: function(action, onerror) {
       var self=this;
       return function(lowLevelInfo) {
-        self.renderError("error", $.extend({
+        // do a deep extension so that any action.messages defined in
+        // lowLevelInfo are added to the action without overwriting the
+        // action's title.
+        self.renderError("error", $.extend(true, {
           action: action
         }, lowLevelInfo), onerror);
       };
@@ -122,7 +146,8 @@ BrowserID.Modules.PageModule = (function() {
 
     // BEGIN TESTING API
     ,
-    onSubmit: onSubmit
+    onSubmit: onSubmit,
+    cancelDialog: cancelDialog
     // END TESTING API
   });
 

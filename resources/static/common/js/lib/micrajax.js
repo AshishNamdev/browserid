@@ -24,7 +24,7 @@ window.Micrajax = (function() {
     }
     else if (window.ActiveXObject) {
       // ...if not, try the ActiveX control
-      xhrObject = new ActiveXObject('Microsoft.XM/LHTTP');
+      xhrObject = new ActiveXObject('Microsoft.XMLHTTP');
     }
 
     return xhrObject;
@@ -34,10 +34,10 @@ window.Micrajax = (function() {
 
   function onReadyStateChange(xhrObject, callback) {
     try {
-      if (xhrObject.readyState == 4) {
+      if (xhrObject.readyState === 4) {
         xhrObject.onreadystatechange = noOp;
 
-        callback && callback(xhrObject.responseText, xhrObject.status);
+        callback && callback(xhrObject.responseText, xhrObject.status, xhrObject.statusText);
       }
     } catch(e) {}
   }
@@ -122,12 +122,20 @@ window.Micrajax = (function() {
           data = getData(contentType, type, options.data);
 
       xhrObject.open(type, url, true);
-      setRequestHeaders({ "Content-type" : contentType }, xhrObject);
+      var headers = {
+        "Content-type" : contentType
+      };
+      for(var k in options.headers) {
+        headers[k] = options.headers[k];
+      }
+      setRequestHeaders(headers, xhrObject);
       xhrObject.send(data);
     }
     else {
       throw "could not get XHR object";
     }
+
+    return xhrObject;
   }
 
   var Micrajax = {
@@ -136,9 +144,11 @@ window.Micrajax = (function() {
           success = options.success,
           mockXHR = { readyState: 0 };
 
-      sendRequest(options, function(responseText, status) {
+      var xhrObject = sendRequest(options, function(responseText, status, statusText) {
         mockXHR.status = status;
         mockXHR.responseText = responseText;
+        if (!mockXHR.statusText)
+          mockXHR.statusText = status !== 0 ? statusText : "error";
         mockXHR.readyState = 4;
 
         if (status >= 200 && status < 300 || status === 304) {
@@ -156,6 +166,11 @@ window.Micrajax = (function() {
           error && error(mockXHR, status, responseText);
         }
       });
+
+      mockXHR.abort = function() {
+        mockXHR.statusText = "aborted";
+        xhrObject.abort();
+      };
 
       return mockXHR;
     }

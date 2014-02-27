@@ -11,11 +11,15 @@ BrowserID.TestHelpers = (function() {
       network = bid.Network,
       user = bid.User,
       storage = bid.Storage,
-      xhr = bid.XHR,
+      moduleManager = bid.module,
+      XHR = bid.Modules.XHR,
+      xhr,
       transport = bid.Mocks.xhr,
+      dom = bid.DOM,
       provisioning = bid.Mocks.Provisioning,
       screens = bid.Screens,
       tooltip = bid.Tooltip,
+      RpInfo = bid.Models.RpInfo,
       registrations = [],
       calls = {},
       testOrigin = "https://login.persona.org";
@@ -53,19 +57,30 @@ BrowserID.TestHelpers = (function() {
 
   var TestHelpers = {
     XHR_TIME_UNTIL_DELAY: 100,
-    setup: function() {
+    setup: function(options) {
+      options = options || {};
+
       unregisterAll();
       mediator.reset();
-      xhr.init({
-        transport: transport,
-        time_until_delay: TestHelpers.XHR_TIME_UNTIL_DELAY
-      });
+      if (options.xhr) {
+        xhr = options.xhr;
+      } else {
+        xhr = XHR.create();
+        xhr.init({
+          transport: transport,
+          time_until_delay: TestHelpers.XHR_TIME_UNTIL_DELAY
+        });
+      }
 
       transport.setDelay(0);
       transport.setContextInfo("auth_level", undefined);
+      transport.setContextInfo("has_password", false);
       transport.useResult("valid");
 
-      network.init({ cookiesEnabledOverride: true });
+      network.init({
+        xhr: xhr,
+        cookiesEnabledOverride: true
+      });
       clearStorage();
 
       $("body").stop().show();
@@ -79,23 +94,27 @@ BrowserID.TestHelpers = (function() {
       screens.error.hide();
       screens.delay.hide();
       tooltip.reset();
+      tooltip.init({
+        animationTime: 0
+      });
       provisioning.setStatus(provisioning.NOT_AUTHENTICATED);
       user.reset();
       user.init({
         provisioning: provisioning
       });
-      user.setOrigin(testOrigin);
-
+      var rpInfo = RpInfo.create({
+        origin: testOrigin,
+        allowUnverified: false
+      });
+      user.setRpInfo(rpInfo);
+      moduleManager.stopAll();
+      moduleManager.reset();
     },
 
     teardown: function() {
       unregisterAll();
       mediator.reset();
-      xhr.init({
-        transport: $,
-        time_until_delay: 10 * 1000
-      });
-      network.init();
+      xhr.stop();
       clearStorage();
       screens.wait.hide();
       screens.error.hide();
@@ -103,6 +122,8 @@ BrowserID.TestHelpers = (function() {
       tooltip.reset();
       provisioning.setStatus(provisioning.NOT_AUTHENTICATED);
       user.reset();
+      moduleManager.stopAll();
+      moduleManager.reset();
     },
 
     testOrigin: testOrigin,
@@ -180,6 +201,16 @@ BrowserID.TestHelpers = (function() {
       start();
     },
 
+    expectedFailure: function() {
+      ok(true, "expected failure");
+      start();
+    },
+
+    unexpectedFailure: function() {
+      ok(false, "unexpected failure");
+      start();
+    },
+
     expectedXHRFailure: function() {
       ok(true, "expected XHR failure");
       start();
@@ -191,18 +222,31 @@ BrowserID.TestHelpers = (function() {
     },
 
     testTooltipVisible: function() {
-      equal(tooltip.shown, true, "tooltip is visible");
+      equal(tooltip.visible(), true, "tooltip is visible");
     },
 
     testTooltipNotVisible: function() {
-      equal(tooltip.shown, false, "tooltip is not visible");
+      equal(tooltip.visible(), false, "tooltip is not visible");
     },
 
-    failureCheck: function failureCheck(cb) {
-      // Take the original arguments, take off the function.  Add any additional
-      // arguments that were passed in, and then tack on the onSuccess and
-      // onFailure to the end.  Then call the callback.
-      var args = [].slice.call(arguments, 1);
+    failureCheck: function failureCheck(expectedStatus, cb) {
+      var args;
+
+      // expectedStatus is optional. If not specified, `errorStatus` is the
+      // default expected status.
+      if (typeof expectedStatus === "function") {
+        // only cb was specified, get rid of it before passing the rest of the
+        // argumetns on. Args has to be fetched before modifying cb and
+        // expectedStatus or else IE8 blows up.
+        args = [].slice.call(arguments, 1);
+        cb = expectedStatus;
+        expectedStatus = "errorStatus";
+      }
+      else {
+        // both expectedStatus and cb were given to us, get rid of them for the
+        // arguments to pass on.
+        args = [].slice.call(arguments, 2);
+      }
 
       var errorInfo;
 
@@ -210,8 +254,10 @@ BrowserID.TestHelpers = (function() {
         ok(true, "XHR failure should never pass");
         ok(info.network.url, "url is in network info");
         ok(info.network.type, "request type is in network info");
-        equal(info.network.textStatus, "errorStatus", "textStatus is in network info");
-        equal(info.network.errorThrown, "errorThrown", "errorThrown is in response info");
+        equal(info.network.textStatus, expectedStatus,
+            "textStatus is in network info");
+        equal(info.network.errorThrown, "errorThrown",
+            "errorThrown is in response info");
 
         start();
       });
@@ -279,11 +325,19 @@ BrowserID.TestHelpers = (function() {
     },
 
     testElementExists: function(selector, msg) {
-      ok($(selector).length, msg || ("element '" + selector + "' exists"));
+      ok(dom.exists(selector), msg || ("element '" + selector + "' exists"));
     },
 
     testElementDoesNotExist: function(selector, msg) {
       ok(!$(selector).length, msg || ("element '" + selector + "' does not exist"));
+    },
+
+    testElementDisabled: function(selector, msg) {
+      ok(!!$(selector).attr('disabled'), msg || ("element '" + selector + "' is disabled"));
+    },
+
+    testElementNotDisabled: function(selector, msg) {
+      ok(!$(selector).attr('disabled'), msg || ("element '" + selector + "' is enabled"));
     },
 
     testRPTosPPShown: function(msg) {
@@ -321,15 +375,26 @@ BrowserID.TestHelpers = (function() {
           if (focusedEl.length) $(focusedEl).focus();
         }
         else {
-          window.console && console.log("currently unable to focus elements, focus check skipped - try focusing the unit test page");
+          var msg = "currently unable to focus elements, focus check skipped - try focusing the unit test page";
+          window.console && console.log(msg);
+          ok(true, msg); // Make QUnit happy if a test contains no other assertions and focus cannot be checked.
         }
         input.remove();
       }
     },
 
-    testElementTextEquals: function(selector, expected, msg) {
-      equal($(selector).eq(0).text(), expected, msg || (selector + " text is: " + expected));
+    testElementTextContains: function(selector, expected, msg) {
+      var el = $(selector).eq(0),
+          elText = (el && el.text()) || "";
 
+      ok(elText.indexOf(expected) > -1, msg || (selector + " text contains: " + expected));
+    },
+
+    testElementTextEquals: function(selector, expected, msg) {
+      var el = $(selector).eq(0),
+          elText = (el && el.text()) || "";
+
+      equal(elText, expected, msg || (selector + " text is: " + expected));
     },
 
     testEmailMarkedVerified: function(email, msg) {
@@ -354,6 +419,72 @@ BrowserID.TestHelpers = (function() {
 
       checkEmail("registered@testuser.com");
       checkEmail("synced_address@testuser.com");
+    },
+
+    testInvalidAuthenticationPassword: function(msg, testInvalidPassword) {
+      if (!testInvalidPassword) {
+        testInvalidPassword = msg;
+        msg = "";
+      }
+      else {
+        msg = msg + " ";
+      }
+
+      asyncTest(msg + "missing password does not authenticate", function() {
+        testInvalidPassword("");
+      });
+
+      asyncTest(msg + "too short of a password does not authenticate", function() {
+        testInvalidPassword(TestHelpers.generateString(
+            bid.PASSWORD_MIN_LENGTH - 1));
+      });
+
+      asyncTest(msg + "too long of a password does not authenticate", function() {
+        testInvalidPassword(TestHelpers.generateString(
+            bid.PASSWORD_MAX_LENGTH + 1));
+      });
+    },
+
+    testInvalidPasswordAndValidationPassword: function(msg, testInvalidPassword) {
+      if (!testInvalidPassword) {
+        testInvalidPassword = msg;
+        msg = "";
+      }
+      else {
+        msg = msg + " ";
+      }
+
+      asyncTest(msg + "missing password", function() {
+        testInvalidPassword("", "password");
+      });
+
+      asyncTest(msg + "too short of a password", function() {
+        testInvalidPassword(
+            TestHelpers.generateString(bid.PASSWORD_MIN_LENGTH - 1));
+      });
+
+      asyncTest(msg + "too long of a password", function() {
+        testInvalidPassword(
+            TestHelpers.generateString(bid.PASSWORD_MAX_LENGTH + 1));
+      });
+
+      asyncTest(msg + "missing vpassword", function() {
+        testInvalidPassword("password", "");
+      });
+
+      asyncTest(msg + "password, vpassword mismatch", function() {
+        testInvalidPassword("password", "different_password");
+      });
+
+    },
+
+    /**
+     * Test to see if a number is within the specified range. min and max are
+     * inclusive.
+     */
+    testNumberInRange: function(numToTest, min, max, msg) {
+      ok(numToTest >= min, msg || (numToTest + "is >= " + min));
+      ok(numToTest <= max, msg || (numToTest + " is <= " + max));
     }
   };
 

@@ -27,16 +27,33 @@ BrowserID.getStorage = function() {
 BrowserID.Storage = (function() {
   "use strict";
 
-  var jwcrypto,
-      ONE_DAY_IN_MS = (1000 * 60 * 60 * 24),
-      storage = BrowserID.getStorage();
+  var ONE_DAY_IN_MS = (1000 * 60 * 60 * 24),
+      IDP_INFO_LIFESPAN_MS = 1000 * 60 * 60,
+      storage = BrowserID.getStorage(),
+      win = window;
 
   // Set default values immediately so that IE8 localStorage synchronization
   // issues do not become a factor. See issue #2206
   setDefaultValues();
 
-  function storeEmails(emails) {
-    storage.emails = JSON.stringify(emails);
+  function emailsStorageKey(issuer) {
+    return issuer || "default";
+  }
+
+  function storeEmails(emails, issuer) {
+    // all emails are stored under the emails namespace. Each issuer has its
+    // own subspace, allowing there to be multiple forced issuers. The default
+    // namespace is "default"
+    var allEmails;
+    try {
+      allEmails = JSON.parse(storage.emails || "{}");
+    } catch(e) {
+      clear();
+      allEmails = {};
+    }
+
+    allEmails[emailsStorageKey(issuer)] = emails;
+    storage.emails = JSON.stringify(allEmails);
   }
 
   function clear() {
@@ -61,12 +78,9 @@ BrowserID.Storage = (function() {
       emailToUserID: {},
       emails: {},
       interaction_data: {},
-      loggedIn: {},
-      main_site: {},
       managePage: {},
       returnTo: null,
       siteInfo: {},
-      stagedOnBehalfOf: null,
       usersComputer: {}
     }, function(defaultVal, key) {
       if (!storage[key]) {
@@ -75,11 +89,11 @@ BrowserID.Storage = (function() {
     });
   }
 
-  function getEmails() {
+  function getEmails(issuer) {
     try {
-      var emails = JSON.parse(storage.emails || "{}");
-      if (emails !== null)
-        return emails;
+      var allEmails = JSON.parse(storage.emails || "{}");
+      if (allEmails)
+        return allEmails[emailsStorageKey(issuer)] || {};
     } catch(e) {
     }
 
@@ -88,39 +102,28 @@ BrowserID.Storage = (function() {
     return {};
   }
 
-  function getEmailCount() {
-    return _.size(getEmails());
+  function getEmailCount(issuer) {
+    return _.size(getEmails(issuer));
   }
 
-  function getEmail(email) {
-    var ids = getEmails();
+  function getEmail(email, issuer) {
+    var ids = getEmails(issuer);
 
     return ids && ids[email];
   }
 
-  function addEmail(email, obj) {
-    var emails = getEmails();
+  function addEmail(email, obj, issuer) {
+    var emails = getEmails(issuer);
+    obj = obj || {};
     emails[email] = obj;
-    storeEmails(emails);
+    storeEmails(emails, issuer);
   }
 
-  function addPrimaryEmail(email, obj) {
-    obj = obj || {};
-    obj.type = "primary";
-    addEmail(email, obj);
-  }
-
-  function addSecondaryEmail(email, obj) {
-    obj = obj || {};
-    obj.type = "secondary";
-    addEmail(email, obj);
-  }
-
-  function removeEmail(email) {
-    var emails = getEmails();
+  function removeEmail(email, issuer) {
+    var emails = getEmails(issuer);
     if(emails[email]) {
       delete emails[email];
-      storeEmails(emails);
+      storeEmails(emails, issuer);
 
       // remove any sites associated with this email address.
       var siteInfo = JSON.parse(storage.siteInfo || "{}");
@@ -128,34 +131,37 @@ BrowserID.Storage = (function() {
         if(siteInfo[site].email === email) {
           delete siteInfo[site].email;
         }
-      }
-      storage.siteInfo = JSON.stringify(siteInfo);
 
-      // remove any logged in sites associated with this address.
-      var loggedInInfo = JSON.parse(storage.loggedIn || "{}");
-      for(var loggedSite in loggedInInfo) {
-        if(loggedInInfo[loggedSite] === email) {
-          delete loggedInInfo[loggedSite];
+        if (siteInfo[site].logged_in === email) {
+          delete siteInfo[site].logged_in;
         }
       }
-      storage.loggedIn = JSON.stringify(loggedInInfo);
+      storage.siteInfo = JSON.stringify(siteInfo);
     }
     else {
       throw new Error("unknown email address");
     }
   }
 
-  function invalidateEmail(email) {
-    var id = getEmail(email);
+  function invalidateEmail(email, issuer) {
+    var id = getEmail(email, issuer);
     if (id) {
       delete id.priv;
       delete id.pub;
       delete id.cert;
-      addEmail(email, id);
+      addEmail(email, id, issuer);
     }
     else {
       throw new Error("unknown email address");
     }
+  }
+
+  function storageCheckSet() {
+    storage.storageCheck = "true";
+  }
+
+  function storageCheckGet() {
+    return storage.storageCheck;
   }
 
   function setReturnTo(returnToURL) {
@@ -172,7 +178,7 @@ BrowserID.Storage = (function() {
         var staged = JSON.parse(storage.returnTo);
 
         if (staged) {
-          if ((new Date() - new Date(staged.at)) > (5 * 60 * 1000)) throw new Error("stale");
+          if ((new Date() - new Date(staged.at)) > (2 * 60 * 60 * 1000)) throw new Error("stale");
           if (typeof(staged.url) !== 'string') throw new Error("malformed");
           returnToURL = staged.url;
         }
@@ -239,28 +245,21 @@ BrowserID.Storage = (function() {
     storage[namespace] = JSON.stringify(allInfo);
   }
 
-  function setLoggedIn(origin, email) {
-    var allInfo = JSON.parse(storage.loggedIn || "{}");
-    if (email) allInfo[origin] = email;
-    else delete allInfo[origin];
-    storage.loggedIn = JSON.stringify(allInfo);
-  }
-
-  function getLoggedIn(origin) {
-    var allInfo = JSON.parse(storage.loggedIn || "{}");
-    return allInfo[origin];
-  }
-
   function loggedInCount() {
-    var allInfo = JSON.parse(storage.loggedIn || "{}");
-    return _.size(allInfo);
+    var count = 0;
+    var allSiteInfo = JSON.parse(storage.siteInfo || "{}");
+    for (var key in allSiteInfo) {
+      if (allSiteInfo[key].logged_in) count++;
+    }
+
+    return count;
   }
 
   function watchLoggedIn(origin, callback) {
-    var lastState = getLoggedIn(origin);
+    var lastState = siteGet(origin, "logged_in");
 
     function checkState() {
-      var currentState = getLoggedIn(origin);
+      var currentState = siteGet(origin, "logged_in");
       if (lastState !== currentState) {
         callback();
         lastState = currentState;
@@ -271,8 +270,13 @@ BrowserID.Storage = (function() {
     if (window.addEventListener) window.addEventListener('storage', checkState, false);
     else window.setInterval(checkState, 2000);
   }
+
   function logoutEverywhere() {
-    storage.loggedIn = "{}";
+    var allSiteInfo = JSON.parse(storage.siteInfo || "{}");
+    for (var site in allSiteInfo) {
+      delete allSiteInfo[site].logged_in;
+    }
+    storage.siteInfo = JSON.stringify(allSiteInfo);
   }
 
   function mapEmailToUserID(emailOrUserID) {
@@ -431,22 +435,147 @@ BrowserID.Storage = (function() {
     storage.emailToUserID = JSON.stringify(allInfo);
   }
 
+  function getIdpVerificationNonce() {
+    var nonce = sessionStorage.idpNonce || win.name;
+    var und;
+    // the dialog window name, when opened by the shim, is __persona_dialog.
+    // Ignore it, it's not a nonce.
+    if (nonce === "__persona_dialog") nonce = und;
+
+    return nonce;
+  }
+
+
+  function getIdpVerificationInfo(nonce) {
+    // set in dialog/modules/verify_with_primary.js if the user must
+    // verify with their primary.
+    nonce = nonce || getIdpVerificationNonce();
+
+    if (!nonce) return;
+
+    var storageKey = 'idpVerification' + nonce;
+    var data = storage[storageKey];
+
+    var primaryParams;
+    if (data)
+      try {
+        primaryParams = JSON.parse(data);
+      } catch(e) {
+        // invalid JSON, delete it
+        storage.removeItem(storageKey);
+        throw e;
+      }
+
+    return primaryParams;
+  }
+
+  function setIdpVerifcationInfo(nonce, info) {
+    // FirefoxOS has a bug where sessionStorage can be purged while the user
+    // is visiting their Idp. localStorage is safe. Instead of saving data
+    // to sessionStorage, which may go away, we have to save to localStorage
+    // in a way that avoids multi-window collisions. Create a per-window nonce.
+    // Save the nonce in a cross-browser compatible way (not as easy as it
+    // seems). Save the idpVerification info into localStorage using
+    // the nonce as a namespace. When the user returns from the Idp, look up
+    // the nonce and fetch the appropriate info.
+
+    if (!info) {
+      info = nonce;
+      nonce = String(Math.random());
+    }
+
+    // The nonce is a bit tricky. Since sessionStorage is not reliable in
+    // FirefoxOS, we need an alternate method. window.name survives across page
+    // redirects in FirefoxOS, but not in IE8. In IE8, when the user redirects
+    // to their primary, window.name is reset to "__persona_dialog". In IE8,
+    // sessionStorage survives redirects to the Idp. So, we save to both.
+    win.name = win.sessionStorage.idpNonce = nonce;
+
+    // save the date to allow expired info to be purged.
+    if (!info.created)
+      info.created = new Date().toString();
+
+    storage['idpVerification' + nonce] = JSON.stringify(info);
+  }
+
+  function clearIdpVerificationInfo() {
+    var nonce = getIdpVerificationNonce();
+
+    if (nonce) {
+      var storageKey = 'idpVerification' + nonce;
+      storage.removeItem(storageKey);
+    }
+
+    // clear any expired info
+    for (var i = 0; i < localStorage.length; ++i) {
+      var key = localStorage.key(i);
+      if (/^idpVerification/.test(key)) {
+        var info;
+        try {
+          info = JSON.parse(storage.getItem(key));
+        }
+        catch(e) {
+          storage.removeItem(key);
+          continue;
+        }
+
+        if (!(info && info.created)) {
+          storage.removeItem(key);
+          continue;
+        }
+
+        var createdTime = new Date(info.created).getTime();
+        var earliestValidTime = new Date().getTime() - IDP_INFO_LIFESPAN_MS;
+
+        if (createdTime < earliestValidTime)
+          storage.removeItem(key);
+      }
+    }
+  }
+
+  function setRpRequestInfo(info) {
+    /**
+     * sessionStorage is used instead of localStorage to enable
+     * multiple tabs to Persona to be open at once
+     */
+    if (!info.origin)
+      throw new Error("missing origin");
+
+    if (!(info.params && info.params.returnTo))
+      throw new Error("missing params.returnTo");
+
+    sessionStorage.rpRequest = JSON.stringify(info);
+  }
+
+  function getRpRequestInfo() {
+    if (sessionStorage.rpRequest) {
+      var data = JSON.parse(sessionStorage.rpRequest);
+
+      try {
+        if (!data.origin)
+          throw new Error("rpRequest missing origin");
+
+        if (!(data.params && data.params.returnTo))
+          throw new Error("rpRequest missing params.returnTo");
+      } catch(e) {
+        clearRpRequestInfo();
+        throw e;
+      }
+
+      return data;
+    }
+  }
+
+  function clearRpRequestInfo() {
+    sessionStorage.removeItem('rpRequest');
+  }
+
   return {
     /**
      * Add an email address and optional key pair.
      * @method addEmail
      */
     addEmail: addEmail,
-    /**
-     * Add a primary address
-     * @method addPrimaryEmail
-     */
-    addPrimaryEmail: addPrimaryEmail,
-    /**
-     * Add a secondary address
-     * @method addSecondaryEmail
-     */
-    addSecondaryEmail: addSecondaryEmail,
     /**
      * Get all email addresses and their associated key pairs
      * @method getEmails
@@ -456,6 +585,7 @@ BrowserID.Storage = (function() {
     /**
      * Get the number of stored emails
      * @method getEmailCount
+     * @param {string} [issuer]
      * @return {number}
      */
     getEmailCount: getEmailCount,
@@ -480,6 +610,25 @@ BrowserID.Storage = (function() {
      */
     invalidateEmail: invalidateEmail,
 
+    /**
+     * The storageCheck namespace is where simple interaction is
+     * that allows us to feature check if communication iframe is
+     * able to read values set by dialog.
+     */
+    storageCheck: {
+      /** write a test value to local storage, to be invoked from
+       *  dialog */
+      set: storageCheckSet,
+      /** read test value to determine if local storage is sandboxed,
+       *  to be invoked from communication iframe */
+      get: storageCheckGet
+    },
+
+    /**
+     * The site namespace is where to store any information that relates to
+     * a particular RP, like which email is selected, if an email is signed in,
+     * etc.
+     */
     site: {
       /**
        * Set a data field for a site
@@ -520,12 +669,6 @@ BrowserID.Storage = (function() {
       set: generic2KeySet.curry("managePage"),
       get: generic2KeyGet.curry("managePage"),
       remove: generic2KeyRemove.curry("managePage")
-    },
-
-    signInEmail: {
-      set: generic2KeySet.curry("main_site", "signInEmail"),
-      get: generic2KeyGet.curry("main_site", "signInEmail"),
-      remove: generic2KeyRemove.curry("main_site", "signInEmail")
     },
 
     usersComputer: {
@@ -578,18 +721,6 @@ BrowserID.Storage = (function() {
      */
     updateEmailToUserIDMapping: updateEmailToUserIDMapping,
 
-    /** set logged in state for a site
-     * @param {string} origin - the site to set logged in state for
-     * @param {string} email - the email that the user is logged in with or falsey if login state should be cleared
-     */
-    setLoggedIn: setLoggedIn,
-
-    /** check if the user is logged into a site
-     * @param {string} origin - the site to set check the logged in state of
-     * @returns the email with which the user is logged in
-     */
-    getLoggedIn: getLoggedIn,
-
     /**
      * Get the number of sites the user is logged in to.
      * @method loggedInCount
@@ -623,6 +754,47 @@ BrowserID.Storage = (function() {
      * see issue #1637 for full details.
      * @method setDefaultValues
      */
-    setDefaultValues: setDefaultValues
+    setDefaultValues: setDefaultValues,
+
+    /**
+     * Info used after verifying ownership of an address with an Idp.
+     */
+    idpVerification: {
+      /**
+       * Get post-Idp verification info for this window
+       * @throws JSON.parse error if invalid JSON.
+       */
+      get: getIdpVerificationInfo,
+      /**
+       * Set post-Idp verification info for this window
+       */
+      set: setIdpVerifcationInfo,
+      /**
+       * Clear post-Idp verification info for this window as well as expired
+       * data
+       */
+      clear: clearIdpVerificationInfo,
+      INFO_LIFESPAN_MS: IDP_INFO_LIFESPAN_MS
+    },
+
+    /**
+     * Info used for environments where the RP must redirect to Persona instead
+     * of using a popup
+     */
+    rpRequest: {
+      /**
+       * Get the RP Redirection info
+       * @throws JSON.parse error if invalid JSON.
+       */
+      get: getRpRequestInfo,
+      /**
+       * Set the RP Redirection info
+       */
+      set: setRpRequestInfo,
+      /**
+       * Clear any RP Redirection info
+       */
+      clear: clearRpRequestInfo
+    }
   };
 }());

@@ -7,25 +7,34 @@
 require('../lib/baseExceptions').addExceptionHandler();
 
 const
+_ = require('underscore'),
 util = require("util"),
 path = require('path'),
 url = require('url'),
 fs = require('fs'),
 express = require('express'),
 computecluster = require('compute-cluster'),
-metrics = require('../lib/metrics'),
 heartbeat = require('../lib/heartbeat'),
-logger = require('../lib/logging').logger,
+logger = require('../lib/logging/logging').logger,
 config = require('../lib/configuration'),
 shutdown = require('../lib/shutdown'),
-statsd = require('../lib/statsd');
+booleanQuery = require('../lib/boolean-query'),
+toobusy = require('../lib/busy_middleware.js'),
+statsd = require("../lib/logging/middleware/statsd");
 
 logger.info("verifier server starting up");
+
+if (config.get('env') === 'production') {
+  logger.info('node.js version: ' + process.version + ' at ' + process.execPath);
+  logger.info('configuration: ', JSON.stringify(JSON.parse(config.toString())));
+}
 
 var app = express.createServer();
 
 // setup health check / heartbeat (before logging)
 heartbeat.setup(app);
+
+app.use(toobusy);
 
 // request to logger, dev formatted which omits personal data in the requests
 app.use(express.logger({
@@ -41,17 +50,9 @@ app.use(express.logger({
 // close down the connection.
 app.use(express.limit("10kb"));
 
-var statsd_config = config.get('statsd');
-if (statsd_config && statsd_config.enabled) {
-  var logger_statsd = require("connect-logger-statsd");
-  app.use(logger_statsd({
-    host: statsd_config.hostname || "localhost",
-    port: statsd_config.port || 8125,
-    prefix: statsd_config.prefix || "browserid.verifier."
-  }));
-}
-
+app.use(statsd());
 app.use(express.bodyParser());
+app.use(booleanQuery);
 
 try {
   // explicitly relay VAR_PATH to children
@@ -75,10 +76,13 @@ try {
 }
 
 function doVerification(req, resp, next) {
+  req.query = req.query || {};
   req.body = req.body || {};
 
-  var assertion = (req.query && req.query.assertion) ? req.query.assertion : req. body.assertion;
-  var audience = (req.query && req.query.audience) ? req.query.audience : req.body.audience;
+  var assertion = req.query.assertion ? req.query.assertion : req.body.assertion;
+  var audience = req.query.audience ? req.query.audience : req.body.audience;
+  var forceIssuer = req.query.experimental_forceIssuer ? req.query.experimental_forceIssuer : req.body.experimental_forceIssuer;
+  var allowUnverified = req.query.experimental_allowUnverified ? req.query.experimental_allowUnverified : req.body.experimental_allowUnverified;
 
   if (!(assertion && audience)) {
     // why couldn't we extract these guys?  Is it because the request parameters weren't encoded as we expect? GH-643
@@ -90,7 +94,7 @@ function doVerification(req, resp, next) {
       if (want_ct.indexOf(ct) == -1) throw "wrong content type";
     } catch (e) {
       reason = "Content-Type expected to be one of: " + want_ct.join(", ");
-      metrics.report('verify', {
+      logger.info('verify', {
         result: 'failure',
         reason: reason,
         rp: audience
@@ -98,7 +102,7 @@ function doVerification(req, resp, next) {
       return resp.json({ status: "failure", reason: reason}, 415);
     }
     reason = "need assertion and audience";
-    metrics.report('verify', {
+    logger.info('verify', {
       result: 'failure',
       reason: reason,
       rp: audience
@@ -109,33 +113,33 @@ function doVerification(req, resp, next) {
   var startTime = new Date();
   cc.enqueue({
     assertion: assertion,
-    audience: audience
+    audience: audience,
+    forceIssuer: forceIssuer,
+    allowUnverified: !!allowUnverified
   }, function (err, r) {
     var reqTime = new Date - startTime;
-    statsd.timing('assertion_verification_time', reqTime);
+    logger.info('assertion_verification_time', reqTime);
 
     // consider "application" errors to be the same as harder errors
     if (!err && r && r.error) err = r.error;
     else if (!r || !r.success) err = "no response returned from child process";
 
     if (err) {
-      statsd.increment("assertion_failure");
+      logger.info("assertion_failure");
       resp.json({"status":"failure", reason: err});  //Could be 500 or 200 OK if invalid cert
-      metrics.report('verify', {
+      logger.info('verify', {
         result: 'failure',
         reason: err,
         rp: audience
       });
     } else {
-      resp.json({
+      resp.json(_.extend(r.success, {
         status : "okay",
-        email : r.success.email,
         audience : audience, // NOTE: we return the audience formatted as the RP provided it, not normalized in any way.
-        expires : new Date(r.success.expires).valueOf(),
-        issuer: r.success.issuer
-      });
+        expires : new Date(r.success.expires).valueOf()
+      }));
 
-      metrics.report('verify', {
+      logger.info('verify', {
         result: 'success',
         rp: r.success.audience
       });
@@ -149,9 +153,11 @@ app.post('/', doVerification);
 // shutdown nicely on signals
 shutdown.handleTerminationSignals(app, function() {
   cc.exit();
+  toobusy.shutdown();
 });
 
 var bindTo = config.get('bind_to');
 app.listen(bindTo.port, bindTo.host, function(conn) {
   logger.info("running on http://" + app.address().address + ":" + app.address().port);
 });
+ 

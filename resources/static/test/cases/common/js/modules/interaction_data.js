@@ -6,8 +6,10 @@
 
   var bid = BrowserID,
       testHelpers = bid.TestHelpers,
+      user = bid.User,
       network = bid.Network,
       storage = bid.Storage,
+      errors = bid.Errors,
       model = bid.Models.InteractionData,
       xhr = bid.Mocks.xhr,
       mediator = bid.Mediator,
@@ -26,6 +28,7 @@
   });
 
   function createController(setKPINameTable, config) {
+    user.clearContext();
     if (typeof setKPINameTable !== "boolean") {
       config = setKPINameTable;
       setKPINameTable = false;
@@ -53,12 +56,44 @@
   }
 
   function indexOfEvent(eventStream, eventName) {
-    for(var event, i = 0; event = eventStream[i]; ++i) {
-      if(event[0] === eventName) return i;
+    for (var event, i = 0; event = eventStream[i]; ++i) {
+      if (event[0] === eventName) return i;
     }
 
     return -1;
   }
+
+  asyncTest("addEvent - return an object with the event", function() {
+    createController(true);
+
+    var eventName = "before_session_context",
+        event = controller.addEvent(eventName);
+
+    equal(event[0], "before_session_context", "event name set correctly");
+    equal(typeof event[1], "number", "event offset set: " + event[1]);
+
+    start();
+  });
+
+  asyncTest("addEvent with eventTime and duration - eventTime used as basis to calculate offset, duration is third item in event", function() {
+    createController(true);
+
+    var eventName = "before_session_context",
+        event = controller.addEvent(eventName, {
+          eventTime: new Date().getTime() + 10,
+          duration: 110
+        });
+
+    equal(event[0], eventName, "event name set correctly");
+    // this is a potentially fragile test, depending on how fast the
+    // environment is. If this is run on a slow VM, the event offset
+    // could be > 20.
+    testHelpers.testNumberInRange(event[1], 10, 20,
+        "event offset from start of controller set correctly");
+    ok(event[2], 110, "duration has been stored");
+
+    start();
+  });
 
   asyncTest("samplingEnabled - ensure data collection working as expected", function() {
     // Desired sequence:
@@ -73,6 +108,9 @@
     createController(true);
 
     controller.addEvent("before_session_context");
+    controller.addKPIData({
+      kpi_before_session_context: true
+    });
 
     var events = controller.getCurrentEventStream();
     ok(indexOfEvent(events, "before_session_context") > -1, "before_session_context correctly saved to event stream");
@@ -82,10 +120,10 @@
     xhr.setDelay(5);
 
     mediator.subscribe("interaction_data_send_complete", function() {
-      var data = controller.getCurrent();
+      var data = controller.getCurrentKPIs();
 
       // Make sure expected items are in the current stored data.
-      testHelpers.testKeysInObject(data, ["event_stream", "sample_rate", "timestamp", "lang", "new_account"]);
+      testHelpers.testKeysInObject(data, ["event_stream", "sample_rate", "timestamp", "lang", "new_account", "kpi_before_session_context"]);
 
       controller.addEvent("after_session_context");
       controller.addEvent("after_session_context");
@@ -130,10 +168,10 @@
     network.withContext(function() {
       controller.addEvent("after_session_context");
 
-      equal(typeof controller.getCurrent(), "undefined", "no stored data");
+      equal(typeof controller.getCurrentKPIs(), "undefined", "no stored data");
       equal(typeof controller.getCurrentEventStream(), "undefined", "no data stored");
 
-      controller.publishStored(function(status) {
+      controller.publishCurrent(function(status) {
         equal(status, false, "there was no data to publish");
         start();
       });
@@ -150,7 +188,7 @@
       // simulate a restart of the dialog.  Clear the session_context and then
       // re-get session context.
       controller = null;
-      network.clearContext();
+      user.clearContext();
       createController(true, { continuation: true });
 
       controller.addEvent("session2_before_session_context");
@@ -181,17 +219,17 @@
       // simulate a restart of the dialog.  Clear the session_context and then
       // re-get session context.
       controller = null;
-      network.clearContext();
+      user.clearContext();
       createController({ continuation: true });
 
       controller.addEvent("session2_before_session_context");
       network.withContext(function() {
         controller.addEvent("session2_after_session_context");
 
-        equal(typeof controller.getCurrent(), "undefined", "no data collected");
+        equal(typeof controller.getCurrentKPIs(), "undefined", "no data collected");
         equal(typeof controller.getCurrentEventStream(), "undefined", "no data collected");
 
-        controller.publishStored(function(status) {
+        controller.publishCurrent(function(status) {
           equal(status, false, "there was no data to publish");
           start();
         });
@@ -212,35 +250,33 @@
 
     // First open dialog never has session_context complete. Data is not
     // collected.
+    xhr.useResult("contextAjaxError");
     createController();
     controller.addEvent("session1_before_session_context");
 
     // Second open dialog is the first to successfully complete
     // session_context, data should be collected.
+    xhr.useResult("valid");
     createController();
     controller.addEvent("session2_before_session_context");
-    network.withContext(function() {
 
-      // Third open dialog successfully completes session_context, should send
-      // data for the 2nd open dialog once session_context completes.
-      createController();
-      controller.addEvent("session2_before_session_context");
+    // Third open dialog successfully completes session_context, should send
+    // data for the 2nd open dialog once session_context completes.
+    createController();
+    controller.addEvent("session2_before_session_context");
 
-      network.withContext(function() {
-        var request = xhr.getLastRequest('/wsapi/interaction_data'),
-            previousSessionsData = JSON.parse(request.data).data;
+    var request = xhr.getLastRequest('/wsapi/interaction_data'),
+        previousSessionsData = JSON.parse(request.data).data;
 
-        equal(previousSessionsData.length, 1, "sending correct result sets");
-        start();
-      });
-    });
+    equal(previousSessionsData.length, 1, "sending correct result sets");
+    start();
   });
 
   asyncTest("timestamp rounded to 10 minute intervals", function() {
     var TEN_MINS_IN_MS = 10 * 60 * 1000;
     createController();
     network.withContext(function() {
-      var timestamp = controller.getCurrent().timestamp;
+      var timestamp = controller.getCurrentKPIs().timestamp;
       ok(timestamp, "a timestamp has been passed: " + timestamp);
       equal(timestamp % TEN_MINS_IN_MS, 0, "timestamp has been rounded to a 10 minute interval");
       start();
@@ -254,13 +290,13 @@
       // disabled.
       controller.disable();
       mediator.publish("kpi_data", { number_emails: 1 });
-      testHelpers.testUndefined(controller.getCurrent());
+      testHelpers.testUndefined(controller.getCurrentKPIs());
 
       // number_emails will be added to KPI data because sampling is
       // disabled.
       controller.enable();
       mediator.publish("kpi_data", { number_emails: 2 });
-      testHelpers.testObjectValuesEqual(controller.getCurrent(), {
+      testHelpers.testObjectValuesEqual(controller.getCurrentKPIs(), {
         number_emails: 2
       });
 
@@ -268,124 +304,153 @@
     });
   });
 
-  asyncTest("kpi orphans are adopted if user.staged and user is signed in", function() {
-    // 1. user.user_staged
-    // 2. dialog is orphaned
-    // 3. user comes back, authenticated
-    // 4. the orphan found a good home
-    createController(false);
+  asyncTest("start_time message sets the startTime to calculate event time offset", function() {
+    createController(true);
+
+    // set a fake startTime to simulate the dialog load delay. This should make
+    // every event be offset by at least 1000 ms.
+    var startTime = new Date().getTime() - 1000;
+    controller.addEvent("start_time", startTime);
+
     network.withContext(function() {
-      // user is staged
-      controller.addEvent("user_staged");
-      // dialog all done, its orphaned, oh noes! think of the kids!
-      mediator.publish("kpi_data", {
-        orphaned: true
-      });
-      network.clearContext();
+      var eventOffset = controller.addEvent("session1_after_session_context")[1];
 
-
-      // new page
-      createController(false);
-      // make user authenticated
-      xhr.setContextInfo("auth_level", "password");
-      network.withContext(function() {
-        var request = xhr.getLastRequest('/wsapi/interaction_data');
-        var data = JSON.parse(request.data).data[0];
-        equal(data.orphaned, false, "orphaned is not sent");
-        start();
-      });
+      ok(eventOffset >= 1000 && eventOffset <= 1100, "eventOffset at least 1000 ms but less than 1100: " + eventOffset);
+      start();
     });
   });
 
-  asyncTest("kpi orphans are NOT adopted if NOT user.staged and user is signed in", function() {
-    // 1. user was not staged
-    // 2. dialog is orphaned
-    // 3. user comes back, authenticated
-    // 4. but he wasn't staged, so dont adopt
-    createController(false);
-    network.withContext(function() {
-      // dialog all done, its orphaned, oh noes! think of the kids!
-      mediator.publish("kpi_data", {
-        orphaned: true
-      });
-      network.clearContext();
-
-
-      // new page
-      createController(false);
-      // make user authenticated
-      xhr.setContextInfo("auth_level", "password");
-      network.withContext(function() {
-        var request = xhr.getLastRequest('/wsapi/interaction_data');
-        var data = JSON.parse(request.data).data[0];
-        equal(data.orphaned, true, "orphaned is sent");
-        start();
-      });
+  test("start_time does not cause blowup if sampling disabled", function() {
+    createController(true, {
+      samplingEnabled: false
     });
+
+    // set a fake startTime to simulate the dialog load delay. This should make
+    // every event be offset by at least 1000 ms.
+    var startTime = new Date().getTime() - 1000;
+    try {
+      controller.addEvent("start_time", startTime);
+      ok(true); // assert affirmatively that the previous line did not throw.
+    } catch(e) {
+      ok(false);
+    }
   });
 
-    asyncTest("kpi orphans are adopted if add_email and email count increased", function() {
-    // 1. email_staged
-    // 2. dialog is orphaned
-    // 3. email is verified
-    // 4. user comes back, authenticated
-    // 5. the orphan found a good home
-    createController(false);
-    network.withContext(function() {
-      // email is staged
-      controller.addEvent("email_staged");
-      // dialog all done, its orphaned, oh noes! think of the kids!
-      mediator.publish("kpi_data", {
-        orphaned: true,
-        number_emails: storage.getEmailCount() || 0
-      });
-      network.clearContext();
+  asyncTest("start_time adjusts date of already added events", function() {
+    // create a date that is one second ago that will be used to update the
+    // start_time.
+    var startTime = new Date().getTime() - 1000;
 
-      // email is verified
-      storage.addSecondaryEmail("testuser@testuser.org");
+    createController(true);
 
-      // new page
-      createController(false);
-      // make user authenticated
-      xhr.setContextInfo("auth_level", "password");
-      network.withContext(function() {
-        var request = xhr.getLastRequest('/wsapi/interaction_data');
-        var data = JSON.parse(request.data).data[0];
-        equal(data.orphaned, false, "orphaned is not sent");
-        start();
-      });
-    });
+    // create an event that has its offset updated.
+    var eventName = "session1_before_session_context",
+        origOffset = controller.addEvent(eventName)[1];
+
+    ok(origOffset >= 0 && origOffset <= 100, "expect less than 100ms of offset before new start_time is set: " + origOffset);
+
+    // Setting the start_time should cause the event's offset to be updated.
+    // Since the new startTime is 1 second before the previous startTime,
+    // the offset of each event should be increased by one second.
+    controller.addEvent("start_time", startTime);
+
+    var eventStream = controller.getCurrentEventStream();
+
+    var index = indexOfEvent(eventStream, eventName);
+    var event = eventStream[index];
+    var newOffset = event[1];
+    ok(newOffset >= 1000, "event's offset has been updated (orig-new): " + origOffset + "-" + newOffset);
+
+    start();
   });
 
-  asyncTest("kpi orphans are NOT adopted if add_email but email count is same", function() {
-    // 1. email staged
-    // 2. dialog is orphaned
-    // 3. user comes back, authenticated
-    // 4. but no new email, so oprhan is true
-    createController(false);
-    network.withContext(function() {
-      // user is staged
-      controller.addEvent("email_staged");
-      // dialog all done, its orphaned, oh noes! think of the kids!
-      mediator.publish("kpi_data", {
-        orphaned: true,
-        number_emails: storage.getEmailCount() || 0
-      });
-      network.clearContext();
+  asyncTest("GET data stripped from xhr_complete messages", function() {
+    createController();
 
-      // user never confirms
-
-      // new page
-      createController(false);
-      // make user authenticated
-      xhr.setContextInfo("auth_level", "password");
-      network.withContext(function() {
-        var request = xhr.getLastRequest('/wsapi/interaction_data');
-        var data = JSON.parse(request.data).data[0];
-        equal(data.orphaned, true, "orphaned is sent");
-        start();
-      });
+    controller.addEvent("xhr_complete", {
+      network: {
+        type: "GET",
+        url: "/wsapi/user_creation_status?email=testuser@testuser.com"
+      }
     });
+
+    var eventStream = controller.getCurrentEventStream();
+    var xhrEvent = eventStream[eventStream.length - 1];
+
+    // Is GET data stripped?
+    equal(xhrEvent[0], "xhr_complete.GET/wsapi/user_creation_status");
+
+    start();
+  });
+
+  function testErrorScreen(config, expectedErrorType) {
+    createController();
+    controller.addEvent("error_screen", config);
+
+    var eventStream = controller.getCurrentEventStream();
+    var errorEvent = eventStream.pop();
+
+    equal(errorEvent[0], expectedErrorType);
+  }
+
+  test("error_screen formats an error object", function() {
+    testErrorScreen({
+      action: errors.addressInfo,
+      network: {
+        status: 503
+      }
+    }, "screen.error.addressInfo.503");
+  });
+
+  test("error_screen takes care of custom error types", function() {
+    testErrorScreen({
+      action: {
+        title: "custom error type"
+      }
+    }, "screen.error.custom error type");
+  });
+
+  test("error_screen takes care of error type without title", function() {
+    testErrorScreen({
+      action: { }
+    }, "screen.error.unknown");
+  });
+
+  asyncTest("Consecutive xhr_complete messages for the same URL only have one entry", function() {
+    createController();
+
+    var REPEAT_COUNT = 5;
+
+    controller.addEvent("xhr_complete", {
+      network: {
+        type: "GET",
+        url: "/wsapi/session_context",
+        duration: 13
+      }
+    });
+
+    for(var i = 0; i < REPEAT_COUNT; i++) {
+      controller.addEvent("xhr_complete", {
+        network: {
+          type: "GET",
+          url: "/wsapi/user_creation_status?email=testuser@testuser.com",
+          duration: 6
+        }
+      });
+    }
+
+    var eventStream = controller.getCurrentEventStream();
+    // Were consecutive XHR events of the same URL prevented?
+    equal(eventStream.length, 2);
+
+    var firstEvent = eventStream[0];
+    var secondEvent = eventStream[1];
+
+    equal(firstEvent[0], "xhr_complete.GET/wsapi/session_context");
+    equal(secondEvent[0], "xhr_complete.GET/wsapi/user_creation_status");
+    equal(secondEvent[controller.REPEAT_COUNT_INDEX], REPEAT_COUNT);
+
+    start();
   });
 
 }());

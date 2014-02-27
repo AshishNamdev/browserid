@@ -14,6 +14,7 @@
       screens = bid.Screens,
       xhr = bid.Mocks.xhr,
       user = bid.User,
+      storage = bid.Storage,
       HTTP_TEST_DOMAIN = "http://testdomain.org",
       HTTPS_TEST_DOMAIN = "https://testdomain.org",
       TESTEMAIL = "testuser@testuser.com",
@@ -23,12 +24,8 @@
       navMock;
 
   function WinMock() {
-    this.location.hash = "#1234";
-  }
-
-  WinMock.prototype = {
     // Oh so beautiful.
-    opener: {
+    this.opener = {
       frames: {
         1234: {
           BrowserID: {
@@ -42,15 +39,13 @@
           }
         }
       }
-    },
-
-    location: {
-    },
-
-    navigator: {},
-
-    sessionStorage: {}
-  };
+    };
+    this.location = {
+      hash: "#1234",
+      search: ""
+    };
+    this.navigator = {};
+  }
 
   function createController(config) {
     // startExternalDependencies defaults to true, for most of our tests we
@@ -99,10 +94,6 @@
 
   function testRelativeURLNotAllowed(options, path) {
     testExpectGetFailure(options, "relative urls not allowed: (" + path + ")");
-  }
-
-  function testMustBeAbsolutePath(options, path) {
-    testExpectGetFailure(options, "must be an absolute path: (" + path + ")");
   }
 
   function testExpectGetSuccess(options, expected, domain, done) {
@@ -176,6 +167,7 @@
     winMock.location.hash = "#NATIVE";
 
     createController({
+      startExternalDependencies: true,
       ready: function() {
         testErrorNotVisible();
         start();
@@ -188,6 +180,7 @@
     winMock.location.hash = "#INTERNAL";
 
     createController({
+      startExternalDependencies: true,
       ready: function() {
         testErrorNotVisible();
         start();
@@ -195,144 +188,158 @@
     });
   });
 
-  asyncTest("initialization with #AUTH_RETURN and add=false - trigger start with correct params", function() {
-    winMock.location.hash = "#AUTH_RETURN";
-    winMock.sessionStorage.primaryVerificationFlow = JSON.stringify({
-      add: false,
-      email: TESTEMAIL
-    });
-
-    createController({
-      ready: function() {
-        mediator.subscribe("start", function(msg, info) {
-          equal(info.type, "primary", "correct type");
-          equal(info.email, TESTEMAIL, "email_chosen with correct email");
-          equal(info.add, false, "add is not specified with CREATE_EMAIL option");
-          start();
-        });
-
-        try {
-          controller.get(testHelpers.testOrigin, {}, function() {}, function() {});
-        }
-        catch(e) {
-          // do nothing, an exception will be thrown because no modules are
-          // registered for the any services.
-        }
+  asyncTest("initialization with RP redirect flow - " +
+      "immediately calls get (which triggers an error)", function() {
+    storage.rpRequest.set({
+      origin: "testuser.com",
+      params: {
+        returnTo: "/"
       }
     });
-  });
 
-  asyncTest("initialization with #AUTH_RETURN and add=true - trigger start with correct params", function() {
-    winMock.location.hash = "#AUTH_RETURN";
-    winMock.sessionStorage.primaryVerificationFlow = JSON.stringify({
-      add: true,
-      email: TESTEMAIL
+    var err;
+    mediator.subscribe("error_screen", function(msg, info) {
+      err = info.message;
     });
 
     createController({
+      startExternalDependencies: true,
       ready: function() {
-        mediator.subscribe("start", function(msg, info) {
-          equal(info.type, "primary", "correct type");
-          equal(info.email, TESTEMAIL, "email_chosen with correct email");
-          equal(info.add, true, "add is specified with ADD_EMAIL option");
-          start();
-        });
-
-        try {
-          controller.get(testHelpers.testOrigin, {}, function() {}, function() {});
-        }
-        catch(e) {
-          // do nothing, an exception will be thrown because no modules are
-          // registered for the any services.
-        }
-      }
-    });
-  });
-
-  asyncTest("onWindowUnload", function() {
-    createController({
-      ready: function() {
-        var error;
-
-        try {
-          controller.onWindowUnload();
-        }
-        catch(e) {
-          error = e;
-        }
-
-        equal(typeof error, "undefined", "unexpected error thrown when unloading window (" + error + ")");
+        equal(err, "Error: module not registered for rp_info");
         start();
       }
     });
   });
 
 
-  asyncTest("get with relative termsOfService & valid privacyPolicy - print error screen", function() {
+
+  function testReturnFromIdP(verificationInfo, expectedParams) {
+    storage.idpVerification.set(verificationInfo);
+
+    createController({
+      ready: function() {
+        mediator.subscribe("start", function(msg, info) {
+          testHelpers.testObjectValuesEqual(info, expectedParams);
+          start();
+        });
+
+        try {
+          controller.get(testHelpers.testOrigin, {}, function() {}, function() {});
+        }
+        catch(e) {
+          // do nothing, an exception will be thrown because no modules are
+          // registered for the any services.
+        }
+      }
+    });
+  }
+
+  asyncTest("initialization with ?AUTH_RETURN_CANCEL - " +
+      " trigger start with cancelled=true", function() {
+    winMock.location.search = "?AUTH_RETURN_CANCEL";
+    testReturnFromIdP({
+      email: TESTEMAIL
+    }, {
+      cancelled: true,
+      type: "primary",
+      email: TESTEMAIL
+    });
+  });
+
+  asyncTest("initialization with ?AUTH_RETURN and add=false - trigger start with correct params", function() {
+    winMock.location.search = "?AUTH_RETURN";
+    testReturnFromIdP({
+      add: false,
+      email: TESTEMAIL
+    }, {
+      type: "primary",
+      email: TESTEMAIL,
+      add: false,
+      cancelled: false
+    });
+  });
+
+  asyncTest("initialization with ?AUTH_RETURN and add=true - trigger start with correct params", function() {
+    winMock.location.search = "?AUTH_RETURN";
+    testReturnFromIdP({
+      add: true,
+      email: TESTEMAIL
+    }, {
+      type: "primary",
+      email: TESTEMAIL,
+      add: true,
+      cancelled: false
+    });
+  });
+
+
+  asyncTest("?AUTH_RETURN while authenticated should call usedAddressAsPrimary", function() {
+    winMock.location.search = "?AUTH_RETURN";
+    storage.idpVerification.set({
+      add: false,
+      email: TESTEMAIL
+    });
+    xhr.setContextInfo("authenticated", true);
+    xhr.setContextInfo("auth_level", "assertion");
+
+    createController({
+      ready: function() {
+        mediator.subscribe("start", function(msg, info) {
+          var req = xhr.getLastRequest();
+          equal(req && req.url, "/wsapi/used_address_as_primary", "sent correct request");
+          start();
+        });
+
+        try {
+          controller.get(testHelpers.testOrigin, {}, function() {}, function() {});
+        }
+        catch(e) {
+          // do nothing, an exception will be thrown because no modules are
+          // registered for the any services.
+        }
+      }
+    });
+  });
+
+  asyncTest("?AUTH_RETURN with add=true should not call usedAddressAsPrimary", function() {
+    winMock.location.search = "?AUTH_RETURN";
+    storage.idpVerification.set({
+      add: true,
+      email: TESTEMAIL
+    });
+    xhr.setContextInfo("authenticated", true);
+    xhr.setContextInfo("auth_level", "assertion");
+    delete xhr.request;
+
+    createController({
+      ready: function() {
+        mediator.subscribe("start", function(msg, info) {
+          var req = xhr.getLastRequest();
+          notEqual(req && req.url, "/wsapi/used_address_as_primary", "request should not be sent");
+          start();
+        });
+
+        try {
+          controller.get(testHelpers.testOrigin, {}, function() {}, function() {});
+        }
+        catch(e) {
+          // do nothing, an exception will be thrown because no modules are
+          // registered for the any services.
+        }
+      }
+    });
+  });
+
+  asyncTest("get with invalid RP parameter (termsOfService) - print error screen", function() {
     testRelativeURLNotAllowed({
       termsOfService: "relative.html",
       privacyPolicy: "/privacy.html"
     }, "relative.html");
   });
 
-  asyncTest("get with script containing termsOfService - print error screen", function() {
-    var URL = "relative.html<script>window.scriptRun=true;</script>";
-    testRelativeURLNotAllowed({
-      termsOfService: URL,
-      privacyPolicy: "/privacy.html"
-    }, URL);
-  });
-
-  asyncTest("get with valid termsOfService & relative privacyPolicy - print error screen", function() {
-    var URL = "relative.html";
-    testRelativeURLNotAllowed({
-      termsOfService: "/tos.html",
-      privacyPolicy: URL
-    }, URL);
-  });
-
-  asyncTest("get with valid termsOfService & privacyPolicy='/' - print error screen", function() {
-    var URL = "/";
-    testRelativeURLNotAllowed({
-      termsOfService: "/tos.html",
-      privacyPolicy: URL
-    }, URL);
-  });
-
-  asyncTest("get with valid termsOfService='/' and valid privacyPolicy - print error screen", function() {
-    var URL = "/";
-    testRelativeURLNotAllowed({
-      termsOfService: URL,
-      privacyPolicy: "/privacy.html"
-    }, URL);
-  });
-
-  asyncTest("get with script containing privacyPolicy - print error screen", function() {
-    var URL = "relative.html<script>window.scriptRun=true;</script>";
-    testRelativeURLNotAllowed({
-      termsOfService: "/tos.html",
-      privacyPolicy: URL
-    }, URL);
-  });
-
-  asyncTest("get with javascript protocol for privacyPolicy - print error screen", function() {
-    var URL = "javascript:alert(1)";
-    testRelativeURLNotAllowed({
-      termsOfService: "/tos.html",
-      privacyPolicy: URL
-    }, URL);
-  });
-
-  asyncTest("get with invalid httpg protocol for privacyPolicy - print error screen", function() {
-    var URL = "httpg://testdomain.com/privacy.html";
-    testRelativeURLNotAllowed({
-      termsOfService: "/tos.html",
-      privacyPolicy: URL
-    }, URL);
-  });
 
 
-  asyncTest("get with valid absolute termsOfService & privacyPolicy - go to start", function() {
+  asyncTest("get with valid RP parameters - go to start", function() {
     testExpectGetSuccess({
       termsOfService: "/tos.html",
       privacyPolicy: "/privacy.html"
@@ -343,159 +350,51 @@
     });
   });
 
-  asyncTest("get with valid fully qualified http termsOfService & privacyPolicy - go to start", function() {
+  asyncTest("get with valid rp_api parameters - go to start, set rp_api in KPIs", function() {
+    var receivedKPIs;
+    mediator.subscribe("kpi_data", function(msg, info) {
+      receivedKPIs = info;
+    });
+
     testExpectGetSuccess({
-      termsOfService: HTTP_TEST_DOMAIN + "/tos.html",
-      privacyPolicy: HTTP_TEST_DOMAIN + "/privacy.html"
+      rp_api: "get"
     },
     {
-      termsOfService: HTTP_TEST_DOMAIN + "/tos.html",
-      privacyPolicy: HTTP_TEST_DOMAIN + "/privacy.html"
+      rpAPI: "get"
+    }, HTTPS_TEST_DOMAIN, function() {
+      equal(receivedKPIs.rp_api, "get");
     });
   });
 
-
-  asyncTest("get with valid fully qualified https termsOfService & privacyPolicy - go to start", function() {
+  asyncTest("get with returnTo - set returnTo in user", function() {
     testExpectGetSuccess({
-      termsOfService: HTTPS_TEST_DOMAIN + "/tos.html",
-      privacyPolicy: HTTPS_TEST_DOMAIN + "/privacy.html"
+      returnTo: "/return.html"
     },
     {
-      termsOfService: HTTPS_TEST_DOMAIN + "/tos.html",
-      privacyPolicy: HTTPS_TEST_DOMAIN + "/privacy.html"
+      returnTo: HTTPS_TEST_DOMAIN + "/return.html"
+    }, HTTPS_TEST_DOMAIN, function() {
+      equal(user.rpInfo.getReturnTo(), HTTPS_TEST_DOMAIN + "/return.html");
     });
   });
 
-  asyncTest("get with valid termsOfService, tosURL & privacyPolicy, privacyURL - use termsOfService and privacyPolicy", function() {
+
+  asyncTest("get with start_time - publish start_time with start time", function() {
+    var now = new Date().getTime();
+
+    var receivedStartTime;
+    mediator.subscribe("start_time", function(msg, startTime) {
+      receivedStartTime = startTime;
+    });
+
     testExpectGetSuccess({
-      termsOfService: "/tos.html",
-      tosURL: "/tos_deprecated.html",
-      privacyPolicy: "/privacy.html",
-      privacyURL: "/privacy_deprecated.html"
+      start_time: now.toString()
     },
     {
-      termsOfService: HTTPS_TEST_DOMAIN + "/tos.html",
-      privacyPolicy: HTTPS_TEST_DOMAIN + "/privacy.html"
+      startTime: now
+    }, HTTPS_TEST_DOMAIN, function() {
+      equal(receivedStartTime, now);
     });
   });
 
-  asyncTest("get with relative siteLogo - not allowed", function() {
-    var URL = "logo.png";
-    testMustBeAbsolutePath({ siteLogo: URL }, URL);
-  });
 
-  asyncTest("get with javascript: siteLogo - not allowed", function() {
-    var URL = "javascript:alert('xss')";
-    testMustBeAbsolutePath({ siteLogo: URL }, URL);
-  });
-
-  asyncTest("get with data-uri: siteLogo - not allowed", function() {
-    var URL = "data:image/png,FAKEDATA";
-    testMustBeAbsolutePath({ siteLogo: URL }, URL);
-  });
-
-  asyncTest("get with http: siteLogo - not allowed", function() {
-    var URL = HTTP_TEST_DOMAIN + "://logo.png";
-    testMustBeAbsolutePath({ siteLogo: URL }, URL);
-  });
-
-  asyncTest("get with https: siteLogo - not allowed", function() {
-    var URL = HTTPS_TEST_DOMAIN + "://logo.png";
-    testMustBeAbsolutePath({ siteLogo: URL }, URL);
-  });
-
-  asyncTest("get with absolute path and http RP - not allowed", function() {
-    var siteLogo = '/i/card.png';
-    testExpectGetFailure({ siteLogo: siteLogo }, "only https sites can specify a siteLogo", HTTP_TEST_DOMAIN);
-  });
-
-  asyncTest("get with absolute path that is too long - not allowed", function() {
-    var siteLogo = '/' + testHelpers.generateString(bid.PATH_MAX_LENGTH);
-    testExpectGetFailure({ siteLogo: siteLogo }, "path portion of a url must be < " + bid.PATH_MAX_LENGTH + " characters");
-  });
-
-  asyncTest("get with absolute path causing too long of a URL - not allowed", function() {
-    var shortHTTPSDomain = "https://test.com";
-    // create a URL that is one character too long
-    var siteLogo = '/' + testHelpers.generateString(bid.URL_MAX_LENGTH - shortHTTPSDomain.length);
-    testExpectGetFailure({ siteLogo: siteLogo }, "urls must be < " + bid.URL_MAX_LENGTH + " characters");
-  });
-
-  asyncTest("get with absolute path and https RP - allowed URL but is properly escaped", function() {
-    createController({
-      ready: function() {
-        var startInfo;
-        mediator.subscribe("start", function(msg, info) {
-          startInfo = info;
-        });
-
-        var siteLogo = '/i/card.png" onerror="alert(\'xss\')" <script>alert(\'more xss\')</script>';
-        var retval = controller.get(HTTPS_TEST_DOMAIN, {
-          siteLogo: siteLogo
-        });
-
-        testHelpers.testObjectValuesEqual(startInfo, {
-          siteLogo: encodeURI(HTTPS_TEST_DOMAIN + siteLogo)
-        });
-        equal(typeof retval, "undefined", "no error expected");
-        testErrorNotVisible();
-        start();
-      }
-    });
-  });
-
-  asyncTest("get with a scheme-relative siteLogo URL - not allowed", function() {
-    var URL = "//example.com/image.png";
-    testMustBeAbsolutePath({ siteLogo: URL }, URL);
-  });
-
-  asyncTest("get with siteLogo='/' URL - not allowed", function() {
-    testMustBeAbsolutePath({ siteLogo: "/" }, "/");
-  });
-
-  asyncTest("get with fully qualified returnTo - not allowed", function() {
-    var URL = HTTPS_TEST_DOMAIN + "/path";
-    testMustBeAbsolutePath({ returnTo: URL }, URL);
-  });
-
-  asyncTest("get with a scheme-relative returnTo URL - not allowed", function() {
-    var URL = '//example.com/return';
-    testMustBeAbsolutePath({ returnTo: URL }, URL);
-  });
-
-  asyncTest("get with absolute path returnTo - allowed", function() {
-    testExpectGetSuccess({ returnTo: "/path"}, {}, undefined, function() {
-      equal(user.getReturnTo(),
-        HTTPS_TEST_DOMAIN + "/path", "returnTo correctly set");
-    });
-  });
-
-  asyncTest("get with returnTo='/' - allowed", function() {
-    testExpectGetSuccess({ returnTo: "/"}, {}, undefined, function() {
-      equal(user.getReturnTo(),
-        HTTPS_TEST_DOMAIN + "/", "returnTo correctly set");
-    });
-  });
-
-  asyncTest("get with valid rp_api - allowed", function() {
-    createController({
-      ready: function() {
-        mediator.subscribe("kpi_data", function(msg, info) {
-          equal(info.rp_api, "get");
-          start();
-        });
-
-        controller.get(HTTPS_TEST_DOMAIN, {
-          rp_api: "get"
-        });
-      }
-    });
-  });
-
-  asyncTest("get with invalid rp_api - not allowed", function() {
-    testExpectGetFailure({
-      rp_api: "invalid_value"
-    }, "invalid value for rp_api: invalid_value");
-  });
 }());
-

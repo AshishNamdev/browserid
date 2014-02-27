@@ -4,8 +4,7 @@
 BrowserID.Modules.PrimaryUserProvisioned = (function() {
   "use strict";
 
-  var ANIMATION_TIME = 250,
-      bid = BrowserID,
+  var bid = BrowserID,
       user = bid.User,
       network = bid.Network,
       errors = bid.Errors;
@@ -17,22 +16,17 @@ BrowserID.Modules.PrimaryUserProvisioned = (function() {
       var self = this,
           email = options.email,
           assertion = options.assertion,
-          addEmailToCurrentUser = !!options.add,
           complete = function(status) {
             options.ready && options.ready(status || false);
-          },
-          delay = options.complete_delay || 3000;
+          };
 
       self.checkRequired(options, "email", "assertion");
 
-      self.renderDialog("primary_user_verified", { email: email });
-
-      if(addEmailToCurrentUser) {
+      if (options.add) {
         network.addEmailWithAssertion(assertion, function(status) {
-          if(status) {
-            setTimeout(function() {
-              self.publish("primary_user_ready", options);
-            }, delay);
+          if (status) {
+            self.publish("primary_user_ready", options);
+            complete(status);
           }
           else {
             self.getErrorDialog(errors.addEmailWithAssertion, complete)();
@@ -41,10 +35,9 @@ BrowserID.Modules.PrimaryUserProvisioned = (function() {
       }
       else {
         user.authenticateWithAssertion(email, assertion, function(status) {
-          if(status) {
-            setTimeout(function() {
-              self.publish("primary_user_ready", options);
-            }, delay);
+          if (status) {
+            self.publish("primary_user_ready", options);
+            complete(status);
           }
           else {
             self.getErrorDialog(errors.authenticateWithAssertion, complete)();

@@ -1,13 +1,25 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 const
 cachify = require('connect-cachify'),
 config = require('../lib/configuration.js'),
 fs = require('fs'),
 jsp = require("uglify-js").parser,
-logger = require('../lib/logging.js').logger,
+logger = require('../lib/logging/logging.js').logger,
 pro = require("uglify-js").uglify,
 uglifycss = require('uglifycss'),
 mkdirp = require('mkdirp'),
+connect_fonts = require('connect-fonts'),
+connect_fonts_opensans = require('connect-fonts-opensans'),
+connect_fonts_feurasans = require('connect-fonts-feurasans'),
 path = require('path');
+
+var font_middleware = connect_fonts.setup({
+  fonts: [ connect_fonts_opensans, connect_fonts_feurasans ],
+  "allow-origin": config.get('public_url')
+});
 
 function compressResource(staticPath, name, files, cb) {
   var orig_code = "";
@@ -16,7 +28,8 @@ function compressResource(staticPath, name, files, cb) {
   // Cachify only used in compress for CSS Images, so no asserts needed
   cachify.setup({}, {
     prefix: config.get('cachify_prefix'),
-    root: staticPath
+    root: staticPath,
+    url_to_paths: connect_fonts.urlToPaths
   });
   function writeFile(final_code) {
     mkdirp(path.join(staticPath, path.dirname(name)), function (err) {
@@ -53,6 +66,10 @@ function compressResource(staticPath, name, files, cb) {
         var copyright = extract_copyright(orig_code) || "";
         if (copyright.length) copyright += "\n\n";
 
+        // replace any embedded URLs with their cachified version. bidbundle
+        // for instance.
+        orig_code = cachify_embedded_js(orig_code);
+
         // compress javascript
         var ast = jsp.parse(orig_code); // parse code and get the initial AST
         ast = pro.ast_mangle(ast); // get a new AST with mangled names
@@ -60,7 +77,7 @@ function compressResource(staticPath, name, files, cb) {
         final_code = copyright + pro.split_lines(pro.gen_code(ast), 32 * 1024); // compressed code here
       } else if (/\.css$/.test(name)) {
         // compress css
-        var cach_code = cachify_embedded(orig_code);
+        var cach_code = cachify_embedded_css(orig_code);
         final_code = uglifycss.processString(cach_code);
       } else {
         return cb("can't determine content type: " + name);
@@ -108,14 +125,30 @@ function compressResource(staticPath, name, files, cb) {
   isBuildNeeded();
 }
 
-function cachify_embedded (css_src) {
+function cachify_embedded_css (css_src) {
   // RegExp is set up to handle multiple url's per declaration, which is
   // possible for things like background-images.
   return css_src.replace(/url\s*\(['"]([^\)'"]+)\s*['"]\s*\)/g, function (str, url) {
-    // This will throw an error if url doesn't exist. This is good as we will
-    // catch typos during build.
-    logger.info("For " + str + " making " + url + " into " + cachify.cachify(url));
-     return "url('" + cachify.cachify(url) + "')";
+     var newurl = url;
+
+     // Do not cachify data URIs
+     if (!/^data:/.test(url)) {
+       // This will throw an error if url doesn't exist. This is good as
+       // we will catch typos during build.
+       newurl = cachify.cachify(url);
+       logger.info("For " + str + " making " + url + " into " + newurl);
+     }
+
+     return "url('" + newurl + "')";
+  });
+}
+
+function cachify_embedded_js(js_src) {
+  // RegExp is set up to handle multiple url's per declaration, which is
+  // possible for things like background-images.
+  return js_src.replace(/addScript\s*\(['"]([^\)'"]+)\s*['"]\s*\)/g, function (str, url) {
+     var newurl = cachify.cachify(url);
+     return "addScript('" + newurl + "')";
   });
 }
 

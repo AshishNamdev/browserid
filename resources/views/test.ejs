@@ -4,28 +4,56 @@
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
 <html>
-	<head>
+        <head>
+        <meta http-equiv="X-UA-Compatible" content="IE=Edge"/>
     <meta charset="utf-8">
-		<link rel="stylesheet" type="text/css" href="qunit/qunit.css" />
-		<title>Persona QUnit Test</title>
+                <link rel="stylesheet" type="text/css" href="qunit/qunit.css" />
+                <title>Persona QUnit Test</title>
   <!--[if lt IE 9]>
     <script src="/common/js/lib/html5shim.js"></script>
   <![endif]-->
-	</head>
-	<body>
+  <style>
+    #qunit-fixture {
+      position: absolute;
+      top: -1000px;
+      left: 100px;
+      right: 100px;
+      height: 300px;
+    }
 
-		<h1 id="qunit-header">Persona Test Suite</h1>
-		<h2 id="qunit-banner"></h2>
-		<div id="qunit-testrunner-toolbar"></div>
-		<h2 id="qunit-userAgent"></h2>
-		<ol id="qunit-tests"></ol>
-		<div id="qunit-test-area"></div>
+    .tooltip {
+      display: none;
+    }
 
-    <div id="qunit-fixture" style="position: absolute; top: -1000px; left: 100px; right: 100px; height: 300px;">
+    /**
+     * Give the tooltip anchor an absolute location that guarantees the
+     * tooltip will have to be shifted back onto the screen.
+     */
+    #needsTooltip {
+      position: absolute;
+      top: 5px;
+      left: 99%;
+    }
+
+  </style>
+        </head>
+        <body>
+
+                <h1 id="qunit-header">Persona Test Suite</h1>
+                <h2 id="qunit-banner"></h2>
+                <div id="qunit-testrunner-toolbar"></div>
+                <h2 id="qunit-userAgent"></h2>
+                <ol id="qunit-tests"></ol>
+                <div id="qunit-test-area"></div>
+
+    <div id="qunit-fixture">
         <a href="#" onclick="$('#contents').hide(); return false;">Close</a>
         <h3>Test Contents, this will be updated and can be safely ignored</h3>
 
-        <div id="rp_info">
+        <div class="rpInfo" id="desktopRpInfo">
+        </div>
+
+        <div class="rpInfo isMobile" id="mobileRpInfo">
         </div>
 
         <div id="page_head">
@@ -34,10 +62,20 @@
         <div id="authentication_form">
           <input type="text" id="authentication_email" />
           <input type="password" id="authentication_password" class="returning" />
+          <label for="authentication_email"></label>
+          <span class="start_rp_name"></span>
+          <span class="label email_state">enter email</span>
+          <span class="label transition_to_secondary"><strong class="authentication_idp_name"></strong> transition</span>
+          <span class="label password_state">enter password</span>
+          <button class="continue" disabled>Next!</button>
         </div>
 
         <div id="controller_head">
           <div id="formWrap">
+              <div class="contents"></div>
+          </div>
+
+          <div id="load">
               <div class="contents"></div>
           </div>
 
@@ -54,14 +92,14 @@
           </div>
         </div>
 
-        <div id="needsTooltip">Tooltip Anchor</div>
+        <input type="text" id="needsTooltip" />
 
         <div id="shortTooltip" class="tooltip" for="needsTooltip">
           short tooltip
         </div>
 
-        <div id="longTooltip" class="tooltip" for="needsTooltip">
-          This is a long tooltip.  This should remain on the screen for about 5 seconds.
+        <div id="secondTooltip" class="tooltip" for="needsTooltip">
+          short tooltip
         </div>
     </div>
 
@@ -71,13 +109,13 @@
     </script>
     <script src="qunit/qunit.js"></script>
     <script src="/include.js"></script>
+    <script src="/common/js/browserid.js"></script>
     <script src="/common/js/lib/jquery-1.7.1.min.js"></script>
-    <script src="/common/js/lib/underscore.js"></script>
+    <script src="/common/js/lib/tinyscore.js"></script>
     <script src="/common/js/lib/gobbledygook.js"></script>
     <script src="/common/js/javascript-extensions.js"></script>
     <script src="/common/js/lib/bidbundle.js"></script>
-    <script src="https://testmob.org/include.js"></script>
-    <script src="/common/js/browserid.js"></script>
+    <script src="/build/code_version.js"></script>
     <script src="/common/js/gettext.js"></script>
     <script src="/common/js/lib/dom-jquery.js"></script>
     <script src="/common/js/lib/hub.js"></script>
@@ -107,17 +145,23 @@
     <script src="/common/js/wait-messages.js"></script>
     <script src="/common/js/error-messages.js"></script>
     <script src="/common/js/storage.js"></script>
-    <script src="/common/js/xhr.js"></script>
+    <script src="/common/js/modules/module.js"></script>
+    <script src="/common/js/modules/xhr.js"></script>
+    <script src="/common/js/models/models.js"></script>
+    <script src="/common/js/models/rp_info.js"></script>
+    <script src="/common/js/models/user-context.js"></script>
+    <script src="/common/js/models/network-context.js"></script>
     <script src="/common/js/network.js"></script>
+    <script src="/common/js/crypto-loader.js"></script>
     <script src="/common/js/provisioning.js"></script>
     <script src="/common/js/user.js"></script>
     <script src="/common/js/command.js"></script>
     <script src="/common/js/history.js"></script>
     <script src="/common/js/state_machine.js"></script>
-    <script src="/common/js/models/models.js"></script>
+
     <script src="/common/js/models/interaction_data.js"></script>
 
-    <script src="/common/js/modules/module.js"></script>
+
     <script src="/common/js/modules/dom_module.js"></script>
     <script src="/common/js/modules/page_module.js"></script>
     <script src="/common/js/modules/xhr_delay.js"></script>
@@ -136,25 +180,30 @@
     <script src="/dialog/js/modules/dialog.js"></script>
     <script src="/dialog/js/modules/check_registration.js"></script>
     <script src="/dialog/js/modules/authenticate.js"></script>
-    <script src="/dialog/js/modules/required_email.js"></script>
-    <script src="/dialog/js/modules/verify_primary_user.js"></script>
     <script src="/dialog/js/modules/generate_assertion.js"></script>
     <script src="/dialog/js/modules/provision_primary_user.js"></script>
     <script src="/dialog/js/modules/primary_user_provisioned.js"></script>
+    <script src="/dialog/js/modules/primary_user_not_provisioned.js"></script>
+    <script src="/dialog/js/modules/primary_offline.js"></script>
+    <script src="/dialog/js/modules/verify_primary_user.js"></script>
     <script src="/dialog/js/modules/is_this_your_computer.js"></script>
     <script src="/dialog/js/modules/set_password.js"></script>
     <script src="/dialog/js/modules/rp_info.js"></script>
+    <script src="/dialog/js/modules/inline_tospp.js"></script>
+    <script src="/dialog/js/modules/complete_sign_in.js"></script>
+    <script src="/dialog/js/modules/validate_rp_params.js"></script>
 
     <script src="/pages/js/page_helpers.js"></script>
     <script src="/pages/js/verify_secondary_address.js"></script>
-    <script src="/pages/js/forgot.js"></script>
+    <script src="/pages/js/reset_password.js"></script>
     <script src="/pages/js/manage_account.js"></script>
-    <script src="/pages/js/signin.js"></script>
     <script src="/pages/js/about.js"></script>
 
     <script src="testHelpers/helpers.js"></script>
 
     <script src="cases/include.js"></script>
+
+    <script src="cases/other/mocks/xhr.js"></script>
 
     <script src="cases/common/js/helpers.js"></script>
     <script src="cases/common/js/dom-helpers.js"></script>
@@ -165,18 +214,20 @@
     <script src="cases/common/js/enable_cookies_url.js"></script>
     <script src="cases/common/js/validation.js"></script>
     <script src="cases/common/js/storage.js"></script>
-    <script src="cases/common/js/xhr.js"></script>
     <script src="cases/common/js/network.js"></script>
+    <script src="cases/common/js/crypto-loader.js"></script>
     <script src="cases/common/js/user.js"></script>
     <script src="cases/common/js/command.js"></script>
     <script src="cases/common/js/history.js"></script>
     <script src="cases/common/js/state_machine.js"></script>
 
     <script src="cases/common/js/models/interaction_data.js"></script>
+    <script src="cases/common/js/models/rp_info.js"></script>
 
     <script src="cases/common/js/modules/module.js"></script>
     <script src="cases/common/js/modules/dom_module.js"></script>
     <script src="cases/common/js/modules/page_module.js"></script>
+    <script src="cases/common/js/modules/xhr.js"></script>
     <script src="cases/common/js/modules/xhr_delay.js"></script>
     <script src="cases/common/js/modules/xhr_disable_form.js"></script>
     <script src="cases/common/js/modules/cookie_check.js"></script>
@@ -186,8 +237,7 @@
     <script src="cases/pages/js/browserid.js"></script>
     <script src="cases/pages/js/page_helpers.js"></script>
     <script src="cases/pages/js/verify_secondary_address.js"></script>
-    <script src="cases/pages/js/forgot.js"></script>
-    <script src="cases/pages/js/signin.js"></script>
+    <script src="cases/pages/js/reset_password.js"></script>
     <script src="cases/pages/js/manage_account.js"></script>
     <script src="cases/pages/js/about.js"></script>
 
@@ -200,16 +250,21 @@
     <script src="cases/dialog/js/modules/add_email.js"></script>
     <script src="cases/dialog/js/modules/check_registration.js"></script>
     <script src="cases/dialog/js/modules/authenticate.js"></script>
-    <script src="cases/dialog/js/modules/required_email.js"></script>
-    <script src="cases/dialog/js/modules/verify_primary_user.js"></script>
     <script src="cases/dialog/js/modules/generate_assertion.js"></script>
     <script src="cases/dialog/js/modules/provision_primary_user.js"></script>
     <script src="cases/dialog/js/modules/primary_user_provisioned.js"></script>
+    <script src="cases/dialog/js/modules/primary_user_not_provisioned.js"></script>
+    <script src="cases/dialog/js/modules/primary_offline.js"></script>
+    <script src="cases/dialog/js/modules/verify_primary_user.js"></script>
     <script src="cases/dialog/js/modules/is_this_your_computer.js"></script>
     <script src="cases/dialog/js/modules/set_password.js"></script>
     <script src="cases/dialog/js/modules/rp_info.js"></script>
+    <script src="cases/dialog/js/modules/inline_tospp.js"></script>
+    <script src="cases/dialog/js/modules/complete_sign_in.js"></script>
+    <script src="cases/dialog/js/modules/validate_rp_params.js"></script>
 
     <!-- must go last or all other tests will fail. -->
     <script src="cases/dialog/js/modules/dialog.js"></script>
-	</body>
+
+        </body>
 </html>

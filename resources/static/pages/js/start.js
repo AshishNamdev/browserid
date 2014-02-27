@@ -14,7 +14,6 @@ $(function() {
       pageHelpers = bid.PageHelpers,
       user = bid.User,
       dom = bid.DOM,
-      xhr = bid.XHR,
       network = bid.Network,
       token = pageHelpers.getParameterByName("token"),
       path = document.location.pathname || "/",
@@ -25,8 +24,7 @@ $(function() {
       XHRDisableForm = modules.XHRDisableForm,
       Development = modules.Development,
       ANIMATION_TIME = 500,
-      checkCookiePaths = [ "/signin", "/forgot", "/add_email_address", "/confirm", "/verify_email_address" ],
-      redirectIfAuthenticatedPaths = [ "/signin", "/forgot" ];
+      checkCookiePaths = [ "/add_email_address", "/confirm", "/verify_email_address" ];
 
 
   function shouldCheckCookies(path) {
@@ -69,8 +67,14 @@ $(function() {
   }
 
 
-  xhr.init({ time_until_delay: 10 * 1000 });
   network.init();
+  user.init();
+
+  // When on the main site, the RP is login.persona.org
+  var rpInfo = bid.Models.RpInfo.create({
+    origin: "https://login.persona.org"
+  });
+  user.setRpInfo(rpInfo);
 
   $(".display_always,.display_auth,.display_nonauth").hide();
 
@@ -136,42 +140,29 @@ $(function() {
       // user is authenticated, redirect them back to the main page. See issue
       // #1345 https://github.com/mozilla/browserid/issues/1345
       var module;
-      if (authenticated && _.indexOf(redirectIfAuthenticatedPaths, path) > -1) {
-        document.location = "/";
-        return;
-      }
-      else if (path === "/") {
+      if (path === "/") {
         bid.index();
       }
-      else if (path === "/signin") {
-        module = bid.signIn.create();
-        module.start({});
-      }
-      else if (path === "/forgot") {
-        module = bid.forgot.create();
-        module.start({});
-      }
-      // START TRANSITION CODE
-      // add_email_address has been renamed to confirm. Once all outstanding
-      // emails are verified or expired, this can be removed. This change is
-      // scheduled to go into train-2012.07.20
-      else if (path === "/add_email_address") {
-        verifySecondaryAddress("verifyEmail");
-      }
-      // END TRANSITION CODE
       else if (path === "/confirm") {
         verifySecondaryAddress("verifyEmail");
+      }
+      else if (path === "/complete_transition") {
+        verifySecondaryAddress("completeTransitionToSecondary");
       }
       else if (path === "/verify_email_address") {
         verifySecondaryAddress("verifyUser");
       }
       else if (path === "/reset_password") {
-        verifySecondaryAddress("completePasswordReset");
+        module = bid.resetPassword.create();
+        module.start({
+          token: token
+        });
       }
       else if (path === "/about") {
         module = bid.about.create();
         module.start({});
       }
+      // TODO /en/tos
       else if (path === "/tos" || path === "/privacy") {
         // do nothing.  This prevents "unknown path" from being displayed to the
         // user.
@@ -179,7 +170,7 @@ $(function() {
       else {
         // Instead of throwing a hard error here, adding a message to the console
         // to let developers know something is up.
-        helpers.log("unknown path");
+        helpers.log("unknown path: " + path);
       }
 
       if (authenticated) {
@@ -188,6 +179,10 @@ $(function() {
       else {
         displayNonAuthenticated();
       }
+
+      // Now that the user's authentication status is known, the nav can
+      // be shown with no visible flicker
+      dom.show('.nav');
 
       // The footer is initially tied to the bottom while the page is loading
       // so that it does not appear to flicker.  Untie the footer and let it
@@ -219,6 +214,14 @@ $(function() {
       $(".display_always").fadeIn(ANIMATION_TIME);
       dom.addClass("body", "not_authenticated");
       $(".display_nonauth").fadeIn(ANIMATION_TIME);
+      dom.bindEvent("a.signIn", "click", function(event) {
+        event.preventDefault();
+        navigator.id.get(function(assertion) {
+          document.location.href = "/";
+        }, {
+          siteName: "Mozilla Persona"
+        });
+      });
     }
   }
 

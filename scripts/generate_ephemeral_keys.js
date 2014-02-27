@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 var fs = require('fs');
 var path = require('path');
 var child_process = require('child_process');
@@ -7,6 +11,8 @@ var VAR = path.join(__dirname, '../var');
 var CERT = path.join(VAR, 'root.cert');
 
 function exec(file, args, next) {
+  // remove path prefix, to prevent spaces in paths causing problems on win32
+  file = file.substring(process.cwd().length + 1);
   child_process.exec([file, args].join(' '), function(err, stdout, stderr) {
     if (err) throw err;
     if (stderr) console.error(stderr);

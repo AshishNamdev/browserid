@@ -42,7 +42,8 @@ suite.addBatch({
     topic: function() {
       start_stop.waitForToken(this.callback);
     },
-    "is obtained": function (t) {
+    "is obtained": function (err, t) {
+      assert.isNull(err);
       assert.strictEqual(typeof t, 'string');
       token = t;
     }
@@ -81,11 +82,8 @@ suite.addBatch({
       assert.strictEqual(r.code, 200);
     },
     "returns an object with proper email": function(err, r) {
-      var respObj = JSON.parse(r.body);
-      var emails = Object.keys(respObj);
+      var emails = JSON.parse(r.body).emails;
       assert.equal(emails[0], "syncer@somehost.com");
-      assert.equal(respObj[emails[0]].type, "secondary");
-      assert.equal(respObj[emails[0]].verified, true);
       assert.equal(emails.length, 1);
     }
   }

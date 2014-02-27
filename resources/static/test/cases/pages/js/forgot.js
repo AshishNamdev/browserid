@@ -12,13 +12,20 @@
       xhr = bid.Mocks.xhr,
       WindowMock = bid.Mocks.WindowMock,
       controller,
+      winMock,
       docMock;
 
   function createController(options) {
     options = options || {};
 
-    docMock = new WindowMock().document;
+
+    winMock = new WindowMock();
+    docMock = winMock.document;
     options.document = docMock;
+
+    pageHelpers.init({
+      window: winMock
+    });
 
     controller = bid.forgot.create();
     controller.start(options);
@@ -34,6 +41,15 @@
       testHelpers.teardown();
     }
   });
+
+  function testKnownSecondaryEmailSent(typedEmail, canonicalEmail) {
+    $("#email").val(typedEmail);
+
+    controller.submit(function() {
+      ok($(".emailsent").is(":visible"), "email sent successfully");
+      start();
+    });
+  }
 
   function testEmailNotSent(config) {
     config = config || {};
@@ -78,7 +94,6 @@
 
   asyncTest("submit with invalid email", function() {
     $("#email").val("invalid");
-    $("#password,#vpassword").val("password");
 
     xhr.useResult("invalid");
 
@@ -86,63 +101,28 @@
   });
 
   asyncTest("submit with known secondary email, happy case - show email sent notice", function() {
-    $("#email").val("registered@testuser.com");
-    $("#password,#vpassword").val("password");
+    testKnownSecondaryEmailSent("registered@testuser.com",
+        "registered@testuser.com");
+  });
 
-    controller.submit(function() {
-      ok($(".emailsent").is(":visible"), "email sent successfully");
-      start();
-    });
+  asyncTest("submit with known secondary email, email must be normalized, happy case - show email sent notice", function() {
+    testKnownSecondaryEmailSent("REGISTERED@TESTUSER.COM",
+        "registered@testuser.com");
   });
 
   asyncTest("submit with known secondary email with leading/trailing whitespace - show email sent notice", function() {
-    $("#email").val("   registered@testuser.com  ");
-    $("#password,#vpassword").val("password");
-
-    controller.submit(function() {
-      ok($(".emailsent").is(":visible"), "email sent successfully");
-      start();
-    });
-  });
-
-  asyncTest("submit with missing password", function() {
-    $("#email").val("unregistered@testuser.com");
-    $("#vpassword").val("password");
-
-    testEmailNotSent();
-  });
-
-  asyncTest("submit with too short of a password", function() {
-    $("#email").val("unregistered@testuser.com");
-    $("#password,#vpassword").val(testHelpers.generateString(bid.PASSWORD_MIN_LENGTH - 1));
-
-    testEmailNotSent();
-  });
-
-  asyncTest("submit with too long of a password", function() {
-    $("#email").val("unregistered@testuser.com");
-    $("#password,#vpassword").val(testHelpers.generateString(bid.PASSWORD_MAX_LENGTH + 1));
-
-    testEmailNotSent();
-  });
-
-  asyncTest("submit with missing vpassword", function() {
-    $("#email").val("unregistered@testuser.com");
-    $("#password").val("password");
-
-    testEmailNotSent();
+    testKnownSecondaryEmailSent("   registered@testuser.com   ",
+        "registered@testuser.com");
   });
 
   asyncTest("submit with unknown secondary email", function() {
     $("#email").val("unregistered@testuser.com");
-    $("#password,#vpassword").val("password");
 
     testEmailNotSent();
   });
 
   asyncTest("submit with throttling", function() {
     $("#email").val("registered@testuser.com");
-    $("#password,#vpassword").val("password");
 
     xhr.useResult("throttle");
     testEmailNotSent();
@@ -150,7 +130,6 @@
 
   asyncTest("submit with XHR Error", function() {
     $("#email").val("testuser@testuser.com");
-    $("#password,#vpassword").val("password");
 
     xhr.useResult("ajaxError");
     testEmailNotSent({

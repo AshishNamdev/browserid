@@ -12,53 +12,6 @@
       errors = bid.Errors,
       dom = bid.DOM;
 
-  function animateClose(callback) {
-    var body = $("body"),
-        bodyWidth = body.innerWidth(),
-        doAnimation = $("#signIn").length && bodyWidth > 640;
-
-    if (doAnimation) {
-      /**
-       * Force the arrow to slide all the way off the screen.
-       */
-      var endWidth = bodyWidth + $(".arrowContainer").outerWidth();
-
-      body.addClass("completing");
-      /**
-       * CSS transitions are used to do the slide effect.  jQuery has a bug
-       * where it does not do transitions correctly if the box-sizing is set to
-       * border-box and the element has a padding
-       */
-      $("#signIn").css("width", endWidth + "px");
-
-      // Call setTimeout here because on Android default browser, sometimes the
-      // callback is not correctly called, it seems as if jQuery does not know
-      // the animation is complete.
-      setTimeout(complete.curry(callback), 1750);
-    }
-    else {
-      complete(callback);
-    }
-  }
-
-  function getAssertion(email, callback) {
-    /*jshint validthis:true*/
-    var self=this,
-        wait = bid.Screens.wait;
-
-    wait.show("wait", bid.Wait.generateKey);
-
-    user.getAssertion(email, user.getOrigin(), function(assert) {
-      assert = assert || null;
-      wait.hide();
-      self.publish("assertion_generated", {
-        assertion: assert
-      });
-
-      complete(callback, assert);
-    }, self.getErrorDialog(errors.getAssertion, complete));
-  }
-
   function authenticateUser(email, pass, callback) {
     /*jshint validthis:true*/
     var self=this;
@@ -81,31 +34,43 @@
     var self=this;
     user.createSecondaryUser(email, password, function(status) {
       if (status.success) {
-        var info = { email: email, password: password };
-        self.publish("user_staged", info, info);
-        complete(callback, true);
+        var data = { email: email, password: password };
+        var msg = status.unverified ? "unverified_created" : "user_staged";
+        self.publish(msg, data, data);
       }
       else {
-        // XXX will this tooltip ever be shown, the authentication screen has
-        // already been torn down by this point?
         tooltip.showTooltip("#could_not_add");
-        complete(callback, false);
       }
+      complete(callback, status);
     }, self.getErrorDialog(errors.createUser, callback));
   }
 
-  function resetPassword(email, password, callback) {
+  function resetPassword(email, callback) {
     /*jshint validthis:true*/
     var self=this;
-    user.requestPasswordReset(email, password, function(status) {
+    user.requestPasswordReset(email, function(status) {
       if (status.success) {
         self.publish("reset_password_staged", { email: email });
       }
       else {
         tooltip.showTooltip("#could_not_add");
       }
-      complete(callback, status.success);
+      complete(callback, status);
     }, self.getErrorDialog(errors.requestPasswordReset, callback));
+  }
+
+  function transitionToSecondary(email, password, callback) {
+    /*jshint validthis:true*/
+    var self=this;
+    user.requestTransitionToSecondary(email, password, function(status) {
+      if (status.success) {
+        self.publish("transition_to_secondary_staged", { email: email });
+      }
+      else {
+        tooltip.showTooltip("#could_not_add");
+      }
+      complete(callback, status);
+    }, self.getErrorDialog(errors.transitionToSecondary, callback));
   }
 
   function reverifyEmail(email, callback) {
@@ -118,7 +83,7 @@
       else {
         tooltip.showTooltip("#could_not_add");
       }
-      complete(callback, status.success);
+      complete(callback, status);
     }, self.getErrorDialog(errors.requestPasswordReset, callback));
   }
 
@@ -126,39 +91,48 @@
     /*jshint validthis:true*/
     var self=this;
 
-    if (user.getStoredEmailKeypair(email)) {
-      // User already owns this address
-      tooltip.showTooltip("#already_own_address");
-      complete(callback, false);
-    }
-    else {
-      user.addressInfo(email, function(info) {
-        if (info.type === "primary") {
-          info = _.extend(info, { email: email, add: true });
-          self.publish("primary_user", info, info);
-          complete(callback, true);
-        }
-        else {
-          self.publish("stage_email", { email: email });
-          complete(callback, true);
-        }
-      }, self.getErrorDialog(errors.addressInfo, callback));
-    }
+    // go get the normalized address and then do the rest of the checks.
+    user.addressInfo(email, function(info) {
+      email = info.email;
+
+      if (user.getStoredEmailKeypair(email)) {
+        // User already owns this address
+        tooltip.showTooltip("#already_own_address");
+        complete(callback, false);
+      }
+      else if (info.type === "primary") {
+        info = _.extend(info, { email: email, add: true });
+        self.publish("primary_user", info, info);
+        complete(callback, true);
+      }
+      else {
+        self.publish("stage_email", { email: email });
+        complete(callback, true);
+      }
+    }, self.getErrorDialog(errors.addressInfo, callback));
+  }
+
+  function refreshEmailInfo(email, callback) {
+    /*jshint validthis:true*/
+    var self=this;
+    user.addressInfo(email, function (info) {
+      callback(_.extend({ email: email }, info));
+    }, self.getErrorDialog(errors.addressInfo, callback));
   }
 
   function addSecondaryEmail(email, password, callback) {
     /*jshint validthis:true*/
     var self=this;
 
-    user.addEmail(email, password, function(added) {
-      if (added) {
+    user.addEmail(email, password, function(status) {
+      if (status.success) {
         var info = { email: email, password: password };
         self.publish("email_staged", info, info );
       }
       else {
         tooltip.showTooltip("#could_not_add");
       }
-      complete(callback, added);
+      complete(callback, status);
     }, self.getErrorDialog(errors.addEmail, callback));
   }
 
@@ -169,15 +143,15 @@
   helpers.Dialog = helpers.Dialog || {};
 
   _.extend(helpers.Dialog, {
-    getAssertion: getAssertion,
     authenticateUser: authenticateUser,
     createUser: createUser,
     addEmail: addEmail,
+    refreshEmailInfo: refreshEmailInfo,
     addSecondaryEmail: addSecondaryEmail,
     resetPassword: resetPassword,
+    transitionToSecondary: transitionToSecondary,
     reverifyEmail: reverifyEmail,
     cancelEvent: helpers.cancelEvent,
-    animateClose: animateClose,
     showRPTosPP: showRPTosPP
   });
 

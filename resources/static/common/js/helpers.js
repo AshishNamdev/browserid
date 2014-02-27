@@ -64,8 +64,31 @@
     }
   }
 
-  function log(msg) {
+  function log() {
     try {
+      var msg = "";
+      var args = [].slice.call(arguments, 0);
+      _.each(args, function(arg, index) {
+        if (index > 0) msg += ", ";
+
+        if (helpers.isString(arg)) {
+          msg += arg;
+        }
+        else if (helpers.isObject(arg)) {
+          try {
+            msg += JSON.stringify(arg, null, 2);
+          } catch(err) {
+            // could be recursive
+            msg += "<<object>>";
+          }
+        }
+        else if (helpers.isFunction(arg)) {
+          msg += "<<function>>";
+        }
+        else {
+          msg += String(arg);
+        }
+      });
       window.console.log(msg);
     } catch(e) {
       // Catch all if console is not available or if it for some reason blows
@@ -73,7 +96,40 @@
     }
   }
 
+  var emailRe = /.*@/;
+  function getDomainFromEmail(email) {
+    return String(email).replace(emailRe, "");
+  }
+
+  function redirect(win, returnTo) {
+    win.location = decodeURI(returnTo);
+  }
+
   _.extend(helpers, {
+    isObject: function(arg) {
+      return Object.prototype.toString.apply(arg) === "[object Object]";
+    },
+
+    isString: function(arg) {
+      return Object.prototype.toString.apply(arg) === "[object String]";
+    },
+
+    isFunction: function(arg) {
+      return Object.prototype.toString.apply(arg) === "[object Function]";
+    },
+
+    isArray: function(arg) {
+      return Object.prototype.toString.apply(arg) === "[object Array]";
+    },
+
+    isNull: function(arg) {
+      return arg === null;
+    },
+
+    isUndefined: function(arg) {
+      return (typeof arg === 'undefined');
+    },
+
     /**
      * Get an email from a DOM element and validate it.
      * @method getAndValidateEmail
@@ -127,7 +183,19 @@
      * @method log
      * @param {string} msg
      */
-    log: log
+    log: log,
+
+    getDomainFromEmail: getDomainFromEmail,
+
+    /**
+     * Since we always encode returnTo, we need to decode it before
+     * redirecting the page. Using this helper makes sure we always
+     * decode first.
+     * @method redirect
+     * @param {window} win
+     * @param {string} returnTo
+     */
+    redirect: redirect
   });
 
 

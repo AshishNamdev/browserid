@@ -7,8 +7,7 @@
 
   window.BrowserID = window.BrowserID || {};
 
-  // Define some constants.
-  _.extend(window.BrowserID, {
+  var bid = window.BrowserID, constants = {
     // always use 1024/160 DSA keys - see issue #1293
     // this used to be called keysize 128, but that made
     // no sense since no component of this is 128 bits
@@ -23,6 +22,17 @@
     // http://support.microsoft.com/kb/q208427
     // See issue #2080 - https://github.com/mozilla/browserid/issues/2080
     URL_MAX_LENGTH: 2083,
-    PATH_MAX_LENGTH: 2048
-  });
+    PATH_MAX_LENGTH: 2048,
+
+    // XHR requests are considered delayed after 10 seconds.
+    XHR_DELAY_MS: 10 * 1000,
+
+    // limit siteLogo's to 128kb. The backend does not accept data-URI
+    // siteLogos, so this is only used for the front end.
+    MAX_SITE_LOGO_SIZE: 128 * 1024
+  };
+
+  for (var key in constants) {
+    bid[key] = constants[key];
+  }
 }());

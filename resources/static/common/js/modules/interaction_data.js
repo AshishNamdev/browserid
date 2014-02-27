@@ -27,11 +27,39 @@ BrowserID.Modules.InteractionData = (function() {
 
   var bid = BrowserID,
       model = bid.Models.InteractionData,
-      network = bid.Network,
+      user = bid.User,
       storage = bid.Storage,
+      errors = bid.Errors,
       complete = bid.Helpers.complete,
       dom = bid.DOM,
+      REPEAT_COUNT_INDEX = 3,
       sc;
+
+  function removeGetData(msg, data) {
+    if (msg && data.network && data.network.type && data.network.url) {
+      return msg + "." + data.network.type + data.network.url.split('?')[0];
+    } else {
+      return 'xhr.malformed_report';
+    }
+  }
+
+  function parseErrorScreen(msg, data) {
+    var parts = [];
+
+    if (data.action) {
+      var errorType = _.keyOf(errors, data.action)
+                          || data.action.title || "unknown";
+      parts.push(errorType);
+    }
+
+    if (data.network && data.network.status > 399) {
+      parts.push(data.network.status);
+    }
+
+    if (!parts.length) parts[0] = "unknown";
+
+    return 'screen.error.' + parts.join('.');
+  }
 
   /**
    * This is a translation table from a message on the mediator to a KPI name.
@@ -53,7 +81,6 @@ BrowserID.Modules.InteractionData = (function() {
    *   may be a couple of exceptions).
    * window.redirect_to_primary - the user has to authenticate with their
    *   IdP so they are being redirected away.
-   * window.unload - the last thing in every event stream.
    * generate_assertion - the order was given to generate an assertion.
    * assertion_generated - the assertion generation is complete -
    *   these two together are useful to measure how long crypto is taking
@@ -66,13 +93,17 @@ BrowserID.Modules.InteractionData = (function() {
    *   user.user_staged/confirmed except it is when the user adds a secondary
    *   email to their account.
    * user.logout - that is the user has clicked "this is not me."
+   * xhr_complete.GET/wsapi/user_creation_status
+   *   Various network traffic
    */
 
   var MediatorToKPINameTable = {
     service: function(msg, data) { return "screen." + data.name; },
     cancel_state: "screen.cancel",
     primary_user_authenticating: "window.redirect_to_primary",
-    window_unload: "window.unload",
+    dom_loading: "window.dom_loading",
+    channel_established: "window.channel_established",
+    user_can_interact: "user.can_interact",
     generate_assertion: null,
     assertion_generated: null,
     user_staged: "user.user_staged",
@@ -87,7 +118,9 @@ BrowserID.Modules.InteractionData = (function() {
     enter_password: "authenticate.enter_password",
     password_submit: "authenticate.password_submitted",
     authentication_success: "authenticate.password_success",
-    authentication_fail: "authenticate.password_fail"
+    authentication_fail: "authenticate.password_fail",
+    xhr_complete: removeGetData,
+    error_screen: parseErrorScreen
   };
 
   function getKPIName(msg, data) {
@@ -101,18 +134,7 @@ BrowserID.Modules.InteractionData = (function() {
     if(type === "function") return kpiInfo(msg, data);
   }
 
-  function onSessionContext(msg, result) {
-    /*jshint validthis: true */
-    var self=this;
-
-    // defend against onSessionContext being called multiple times
-    if (self.sessionContextHandled) return;
-    self.sessionContextHandled = true;
-
-    publishPreviousSession.call(self, result);
-  }
-
-  function publishPreviousSession(result) {
+  function publishCurrent(done) {
     /*jshint validthis: true */
     // Publish any outstanding data.  Unless this is a continuation, previous
     // session data must be published independently of whether the current
@@ -124,56 +146,29 @@ BrowserID.Modules.InteractionData = (function() {
 
     var self = this;
 
-    function onComplete() {
-      model.stageCurrent();
-      publishStored.call(self);
-      beginSampling.call(self, result);
-    }
+    model.publishCurrent(function(status) {
+      user.withContext(function(userContext, networkContext) {
+        beginSampling.call(self, networkContext);
 
-    // if we were orphaned last time, but user is now authenticated,
-    // lets see if their action end in success, and if so,
-    // remove the orphaned flag
-    //
-    // actions:
-    // - user_staged => is authenticated?
-    // - email_staged => email count is higher?
-    //
-    // See https://github.com/mozilla/browserid/issues/1827
-    var current = model.getCurrent();
-    if (current && current.orphaned) {
-      var events = current.event_stream || [];
-      if (hasEvent(events, MediatorToKPINameTable.user_staged)) {
-        network.checkAuth(function(auth) {
-          if (!!auth) {
-            current.orphaned = false;
-            model.setCurrent(current);
-          }
-          complete(onComplete);
-        });
-      } else if (hasEvent(events, MediatorToKPINameTable.email_staged)) {
-        if ((storage.getEmailCount() || 0) > (current.number_emails || 0)) {
-          current.orphaned = false;
-          model.setCurrent(current);
-        }
-        complete(onComplete);
-      } else {
-        // oh well, an orphan it is
-        complete(onComplete);
-      }
-    } else {
-      // not an orphan, move along
-      complete(onComplete);
-    }
+        var msg = status ? "interaction_data_send_complete"
+                         : "interaction_data_send_error";
+        self.publish(msg);
+
+        complete(done, status);
+      });
+    });
   }
 
-  function beginSampling(result) {
+  function beginSampling(networkContext) {
     /*jshint validthis: true */
-    var self = this;
+    var self = this,
+        dataSampleRate = networkContext.data_sample_rate,
+        serverTime = networkContext.server_time;
 
     // set the sample rate as defined by the server.  It's a value
     // between 0..1, integer or float, and it specifies the percentage
     // of the time that we should capture
-    var sampleRate = result.data_sample_rate || 0;
+    var sampleRate = dataSampleRate || 0;
 
     if (typeof self.samplingEnabled === "undefined") {
       // now that we've got sample rate, let's smash it into a boolean
@@ -190,9 +185,9 @@ BrowserID.Modules.InteractionData = (function() {
     // safety is the timestamp would be at a 10 minute resolution.  Round to the
     // previous 10 minute mark.
     var TEN_MINS_IN_MS = 10 * 60 * 1000,
-        roundedServerTime = Math.floor(result.server_time / TEN_MINS_IN_MS) * TEN_MINS_IN_MS;
+        roundedServerTime = Math.floor(serverTime / TEN_MINS_IN_MS) * TEN_MINS_IN_MS;
 
-    var currentData = {
+    var newKPIs = _.extend(self.initialKPIs, {
       event_stream: self.initialEventStream,
       sample_rate: sampleRate,
       timestamp: roundedServerTime,
@@ -200,10 +195,10 @@ BrowserID.Modules.InteractionData = (function() {
       lang: dom.getAttr('html', 'lang') || null,
       // this will be overridden in state.js if a new account is created.
       new_account: false
-    };
+    });
 
     if (window.screen) {
-      currentData.screen_size = {
+      newKPIs.screen_size = {
         width: window.screen.width,
         height: window.screen.height
       };
@@ -213,77 +208,116 @@ BrowserID.Modules.InteractionData = (function() {
     // as soon as the first session_context completes for the next dialog
     // session.  Use a push because old data *may not* have been correctly
     // published to a down server or erroring web service.
-    model.push(currentData);
+    model.push(newKPIs);
 
-    self.initialEventStream = null;
+    self.initialEventStream = self.initialKPIs = null;
 
     self.samplesBeingStored = true;
-
   }
 
-  function indexOfEvent(eventStream, eventName) {
-    for(var event, i = 0; event = eventStream[i]; ++i) {
-      if(event[0] === eventName) return i;
-    }
-
-    return -1;
+  function onKPIData(msg, kpiData) {
+    /*jshint validthis: true*/
+    this.addKPIData(kpiData);
   }
 
-  function hasEvent(eventStream, eventName) {
-    return indexOfEvent(eventStream, eventName) !== -1;
-  }
-
-  function onKPIData(msg, result) {
+  function addKPIData(kpiData) {
     /*jshint validthis: true */
     // currentData will be undefined if sampling is disabled.
-    var currentData = this.getCurrent();
+    var currentData = this.getCurrentKPIs();
     if (currentData) {
-      _.extend(currentData, result);
-      model.setCurrent(currentData);
+      _.extend(currentData, kpiData);
+      setCurrentKPIs.call(this, currentData);
     }
   }
 
-  // At every load, after session_context returns, try to publish the previous
-  // data.  We have to wait until session_context completes so that we have
-  // a csrf token to send.
-  function publishStored(oncomplete) {
+  function updateStartTime(newStartTime) {
     /*jshint validthis: true */
-    var self=this;
+    var self=this,
+        eventStream = self.getCurrentEventStream();
 
-    model.publishStaged(function(status) {
-      var msg = status ? "interaction_data_send_complete" : "interaction_data_send_error";
-      self.publish(msg);
-      complete(oncomplete, status);
-    });
+    // Base the offset of any event already on the event stream off of the new
+    // startTime.
+    if (eventStream && eventStream.length) {
+      var delta = self.startTime - newStartTime;
+
+      for (var i=0, event; event=eventStream[i]; ++i) {
+        event[1] += delta;
+      }
+
+      setCurrentEventStream.call(self, eventStream);
+    }
+
+    self.startTime = newStartTime;
   }
-
 
   function addEvent(msg, data) {
     /*jshint validthis: true */
+    data = data || {};
     var self=this;
+
+    if (msg === "start_time") updateStartTime.call(self, data);
     if (self.samplingEnabled === false) return;
 
     var eventName = getKPIName.call(self, msg, data);
     if (!eventName) return;
 
-    var eventData = [ eventName, new Date() - self.startTime ];
-    if (self.samplesBeingStored) {
-      var d = model.getCurrent() || {};
-      if (!d.event_stream) d.event_stream = [];
-      d.event_stream.push(eventData);
-      model.setCurrent(d);
-    } else {
-      self.initialEventStream.push(eventData);
+    if (preventDuplicateXhrEvents.call(self, eventName)) return;
+
+    var eventData = [ eventName,
+      (data.eventTime || new Date()) - self.startTime ];
+
+    if (data.duration) eventData.push(data.duration);
+
+    var eventStream = self.getCurrentEventStream();
+    if (eventStream) {
+      eventStream.push(eventData);
+      setCurrentEventStream.call(self, eventStream);
+    }
+
+    return eventData;
+  }
+
+  function preventDuplicateXhrEvents(eventName) {
+    /*jshint validthis: true */
+    var self=this;
+    var eventStream = self.getCurrentEventStream();
+
+    // Check if event is the same as the last event. If it is, update the
+    // number of times the last event was called. If not, continue as always.
+    if (/^xhr_complete/.test(eventName) && eventStream && eventStream.length) {
+      var lastEvent = eventStream[eventStream.length - 1];
+      if (lastEvent[0] === eventName) {
+        // same xhr event as the last one. Update the count.
+        var eventCallCount = lastEvent[REPEAT_COUNT_INDEX] || 1;
+        eventCallCount++;
+        lastEvent[REPEAT_COUNT_INDEX] = eventCallCount;
+        setCurrentEventStream.call(self, eventStream);
+        return lastEvent;
+      }
     }
   }
 
-  function getCurrent() {
+  function getCurrentKPIs() {
     /*jshint validthis: true */
     var self=this;
     if(self.samplingEnabled === false) return;
 
     if (self.samplesBeingStored) {
       return model.getCurrent();
+    }
+    else {
+      return self.initialKPIs;
+    }
+  }
+
+  function setCurrentKPIs(kpis) {
+    /*jshint validthis: true */
+    var self=this;
+    if (self.samplesBeingStored) {
+      model.setCurrent(kpis);
+    }
+    else {
+      self.initialKPIs = kpis;
     }
   }
 
@@ -293,14 +327,30 @@ BrowserID.Modules.InteractionData = (function() {
     if(self.samplingEnabled === false) return;
 
     if (self.samplesBeingStored) {
-      return model.getCurrent().event_stream;
+      var d = model.getCurrent() || {};
+      if (!d.event_stream) d.event_stream = [];
+      return d.event_stream;
     }
     else {
       return self.initialEventStream;
     }
   }
 
-  var Module = bid.Modules.PageModule.extend({
+  function setCurrentEventStream(eventStream) {
+    /*jshint validthis: true*/
+    var self=this;
+
+    if (self.samplesBeingStored) {
+      var d = model.getCurrent() || {};
+      d.event_stream = eventStream;
+      model.setCurrent(d);
+    }
+    else {
+      self.initialEventStream = eventStream;
+    }
+  }
+
+  var Module = bid.Modules.Module.extend({
     start: function(options) {
       options = options || {};
 
@@ -321,9 +371,9 @@ BrowserID.Modules.InteractionData = (function() {
       if (options.continuation) {
         // There will be no current data if the previous session was not
         // allowed to save.
-        var previousData = model.getCurrent();
-        if (previousData) {
-          self.startTime = Date.parse(previousData.local_timestamp);
+        var lastSessionsKPIs = model.getCurrent();
+        if (lastSessionsKPIs) {
+          self.startTime = Date.parse(lastSessionsKPIs.local_timestamp);
 
 
           // instead of waiting for session_context to start appending data to
@@ -339,30 +389,37 @@ BrowserID.Modules.InteractionData = (function() {
         }
       }
       else {
+        // publish any outstanding KPIs as soon as we start. Do not even wait
+        // for onSesisonContext.
+        // Set a default start time. The default is overridden if the
+        // "start_time" message is triggerred
         self.startTime = new Date();
 
-        // The initialEventStream is used to store events until onSessionContext
-        // is called.  Once onSessionContext is called and it is known whether
-        // the user's data will be saved, initialEventStream will either be
-        // discarded or added to the data set that is saved to localmodel.
+        // The initialEventStream is used to store events until session context
+        // is fetched. Once it is known whether the user's data will be saved,
+        // initialEventStream will either be discarded or made into the data
+        // set that is sent to the server.
         self.initialEventStream = [];
+
+        // the initialKPIs are used to store KPIs until session context is
+        // fetched.
+        self.initialKPIs = {};
+
         self.samplesBeingStored = false;
 
-        // whenever session_context is hit, let's hear about it so we can
-        // extract the information that's important to us (like, whether we
-        // should be running or not)
-        self.subscribe('context_info', onSessionContext);
+        publishCurrent.call(self);
       }
 
       // on all events, update event_stream
       self.subscribeAll(addEvent);
-      self.subscribe('kpi_data', onKPIData);
+      self.subscribe('kpi_data', onKPIData, self);
     },
 
+    addKPIData: addKPIData,
     addEvent: addEvent,
-    getCurrent: getCurrent,
+    getCurrentKPIs: getCurrentKPIs,
     getCurrentEventStream: getCurrentEventStream,
-    publishStored: publishStored
+    publishCurrent: publishCurrent
 
     // BEGIN TEST API
     ,
@@ -376,7 +433,8 @@ BrowserID.Modules.InteractionData = (function() {
 
     disable: function() {
       this.samplingEnabled = false;
-    }
+    },
+    REPEAT_COUNT_INDEX: REPEAT_COUNT_INDEX
     // END TEST API
   });
 

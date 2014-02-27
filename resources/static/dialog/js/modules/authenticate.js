@@ -16,95 +16,189 @@ BrowserID.Modules.Authenticate = (function() {
       dom = bid.DOM,
       lastEmail = "",
       addressInfo,
-      hints = ["returning","start","addressInfo"],
+      hints = ["returning", "start", "transitionToSecondary", "addressInfo"],
+      DISABLED_ATTRIBUTE = "disabled",
+      SUBMIT_DISABLED_CLASS = "submit_disabled",
       CONTENTS_SELECTOR = "#formWrap .contents",
       AUTH_FORM_SELECTOR = "#authentication_form",
       EMAIL_SELECTOR = "#authentication_email",
       PASSWORD_SELECTOR = "#authentication_password",
-      FORGOT_PASSWORD_SELECTOR = "#forgotPassword",
-      RP_NAME_SELECTOR = "#start_rp_name",
+      FORGOT_PASSWORD_SELECTOR = ".forgotPassword",
+      RP_NAME_SELECTOR = ".start_rp_name",
       BODY_SELECTOR = "body",
       AUTHENTICATION_CLASS = "authentication",
+      CONTINUE_BUTTON_SELECTOR = ".continue",
       FORM_CLASS = "form",
+      CANCEL_PASSWORD_SELECTOR = ".cancelPassword",
+      EMAIL_IMMUTABLE_CLASS = "emailImmutable",
+      IDP_SELECTOR = "#authentication_form .authentication_idp_name",
+      PERSONA_INTRO_SELECTOR = ".persona_intro",
+      PERSONA_URL = "https://login.persona.org",
       currentHint;
 
   function getEmail() {
-    return helpers.getAndValidateEmail(EMAIL_SELECTOR);
+    // If available, use the email sent back by addressInfo because it contains
+    // the normalized email. If not, fetch from the DOM.
+    // Email should only be fetched from the DOM if the email is new OR
+    // if the user has edited the email field after the email address was
+    // checked.
+    return (addressInfo && addressInfo.email) ||
+               helpers.getAndValidateEmail(EMAIL_SELECTOR);
   }
 
-  function initialState(info) {
+  function hasPassword(info) {
+    /*jshint validthis:true*/
+    var self = this;
+    /*
+     * If this is is a required email (emailSpecified && !emailMutable),
+     * we make the assumption that the address is a secondary with a password.
+     * emailSpecified can occur when (OR):
+     * 1) post-reset-password where the email verification occurs in a
+     *    second browser.
+     * 2) When signed in to the assertion level and then a fallback IdP backed
+     *    address is chosen.
+     *
+     * An unverified email address can occur when (OR):
+     * 1) User registers address on a site that uses allowUnverified and never
+     *    verifies the address.
+     * 2) User has an account with multiple addresses backed by the fallback
+     *    IdP, they perform a password reset, verify the first address,
+     *    then try to sign in using one of the other addresses in a browser
+     *    without a session.
+     * In either case, the user must enter the account password. If the address
+     * must be verified, verification will be taken care of by the state machine.
+     */
+    return (self.emailSpecified && !self.emailMutable) ||
+              (info && info.email && info.type === "secondary" &&
+                  (info.state === "known" ||
+                   info.state === "transition_to_secondary" ||
+                   info.state === "unverified"));
+  }
+
+  function isNewPersonaAccount(info) {
+    /*jshint validthis: true*/
+    return (info.state === "unknown" && info.type === "secondary"
+                && this.rpInfo.isDefaultIssuer());
+  }
+
+  function isNewFxAccount(info) {
+    /*jshint validthis: true*/
+    return (info.state === "unknown" && !this.rpInfo.isDefaultIssuer());
+  }
+
+  function chooseInitialState(info) {
     /*jshint validthis: true*/
     var self=this;
-
-    self.submit = checkEmail;
-    if(info && info.email && info.type === "secondary" && info.known) {
+    if (hasPassword.call(self, info)) {
+      addressInfo = info;
       enterPasswordState.call(self, info.ready);
     }
     else {
-      showHint("start");
-      enterEmailState.call(self);
-      complete(info.ready);
+      enterEmailState.call(self, info.ready);
     }
   }
 
-  function checkEmail(info) {
+  function checkEmail(info, done) {
     /*jshint validthis: true*/
     var email = getEmail(),
         self = this;
-
     if (!email) return;
 
-    dom.setAttr(EMAIL_SELECTOR, 'disabled', 'disabled');
-    if(info && info.type) {
+    dom.setAttr(EMAIL_SELECTOR, DISABLED_ATTRIBUTE, DISABLED_ATTRIBUTE);
+    dom.addClass(BODY_SELECTOR, SUBMIT_DISABLED_CLASS);
+    if (info && info.type) {
       onAddressInfo(info);
     }
     else {
       showHint("addressInfo");
+      self.renderLoad("load", {
+        title: gettext("Checking with your email provider.")
+      });
+
       user.addressInfo(email, onAddressInfo,
         self.getErrorDialog(errors.addressInfo));
     }
 
     function onAddressInfo(info) {
       addressInfo = info;
-      dom.removeAttr(EMAIL_SELECTOR, 'disabled');
+      dom.removeAttr(EMAIL_SELECTOR, DISABLED_ATTRIBUTE);
+      dom.removeClass(BODY_SELECTOR, SUBMIT_DISABLED_CLASS);
 
-      if(info.type === "primary") {
-        self.close("primary_user", info, info);
-      }
-      else if(info.known) {
+      self.hideLoad();
+
+      // We rely on user.addressInfo to tell us when an address that would
+      // normally be a primary is a secondary because of forcedIssuer. If
+      // the user has an address that is normally a primary, but is now using
+      // forcedIssuer, info.state will be either transition_to_secondary or
+      // transition_no_password depending on whether the user has a password.
+      if (hasPassword.call(self, info)) {
         enterPasswordState.call(self);
-      } else {
-        createSecondaryUser.call(self);
       }
+      else if (isNewPersonaAccount.call(self, info)) {
+        createPersonaAccount.call(self);
+      }
+      else if (isNewFxAccount.call(self, info)) {
+        createFxAccount.call(self);
+      }
+      else {
+        // This is either a transition_no_password or a primary address.
+        // The email chosen handler will have the user set a password for
+        // transition_no_password. Primary email addresses will be handled
+        // accordingly. Either way, a record may not be available because
+        // the user may not eyt be authenticated.
+        info.allow_new_record = true;
+        self.publish("email_chosen", info, info);
+      }
+
+      complete(done);
     }
   }
 
-  function createSecondaryUser(callback) {
+  function createPersonaAccount(callback) {
+    /*jshint validthis: true*/
+    createAccount.call(this, "new_user", callback);
+  }
+
+  function createFxAccount(callback) {
+    /*jshint validthis: true*/
+    createAccount.call(this, "new_fxaccount", callback);
+  }
+
+  function createAccount(msg, callback) {
     /*jshint validthis: true*/
     var self=this,
         email = getEmail();
 
     if (email) {
-      self.close("new_user", { email: email }, { email: email });
-    } else {
-      complete(callback);
+      self.close(msg, { email: email }, {
+        email: email,
+        email_mutable: true
+      });
     }
+
+    complete(callback);
   }
 
-  function authenticate() {
+  function authenticate(done) {
     /*jshint validthis: true*/
     var email = getEmail(),
         pass = helpers.getAndValidatePassword(PASSWORD_SELECTOR),
         self = this;
 
     if (email && pass) {
-      dialogHelpers.authenticateUser.call(self, email, pass, function(authenticated) {
+      dialogHelpers.authenticateUser.call(self, email, pass,
+          function(authenticated) {
         if (authenticated) {
           self.close("authenticated", {
-            email: email
+            email: email,
+            password: pass
           });
         }
+        complete(done);
       });
+    }
+    else {
+      complete(done);
     }
   }
 
@@ -116,29 +210,39 @@ BrowserID.Modules.Authenticate = (function() {
     currentHint = showSelector;
 
     _.each(hints, function(className) {
-      if(className !== showSelector) {
-        dom.hide("." + className + ":not(." + showSelector + ")");
-      }
+      dom.removeClass("body", className);
     });
 
-    $("." + showSelector).fadeIn(ANIMATION_TIME, function() {
-      // Fire a window resize event any time a new section is displayed that
-      // may change the content's innerHeight.  this will cause the "screen
-      // size hacks" to resize the screen appropriately so scroll bars are
-      // displayed when needed.
-      dom.fireEvent(window, "resize");
-      complete(callback);
-    });
+    // Fire a window resize event any time a new section is displayed that
+    // may change the content's innerHeight.  this will cause the "screen
+    // size hacks" to resize the screen appropriately so scroll bars are
+    // displayed when needed.
+    dom.addClass("body", showSelector);
+    dom.fireEvent(window, "resize");
+    complete(callback);
   }
 
-  function enterEmailState() {
+  function enterEmailState(done) {
     /*jshint validthis: true*/
     var self=this;
-    if (!dom.is(EMAIL_SELECTOR, ":disabled")) {
-      self.publish("enter_email");
-      self.submit = checkEmail;
-      showHint("start");
+    addressInfo = null;
+
+    // If we are already in the enterEmailState, skip out or else we mess with
+    // auto-completion.
+    if (self.submit === checkEmail) return complete(done);
+    self.submit = checkEmail;
+
+    // If we are signing in to the Persona main site, do not show
+    // the Persona intro that says "<site> uses Persona to sign you in!"
+    if (self.rpInfo.getOrigin() === PERSONA_URL) {
+      dom.hide(PERSONA_INTRO_SELECTOR);
     }
+
+    showHint("start");
+    dom.focus(EMAIL_SELECTOR);
+    self.publish("enter_email");
+
+    complete(done);
   }
 
   function enterPasswordState(callback) {
@@ -147,14 +251,38 @@ BrowserID.Modules.Authenticate = (function() {
 
     dom.setInner(PASSWORD_SELECTOR, "");
 
-    self.publish("enter_password", addressInfo);
     self.submit = authenticate;
-    showHint("returning", function() {
+
+    var state = "returning";
+    if (addressInfo.state === "transition_to_secondary") {
+      state = "transitionToSecondary";
+      dom.setInner(IDP_SELECTOR, helpers.getDomainFromEmail(addressInfo.email));
+    }
+
+    showHint(state, function() {
       dom.focus(PASSWORD_SELECTOR);
+      self.publish("enter_password", addressInfo);
+      // complete must be called after focus or else the front end unit tests
+      // fail. When complete was called outside of showHint, IE8 complained
+      // because the element we are trying to focus was no longer available.
+      complete(callback);
     });
+  }
 
-
-    complete(callback);
+  function cancelPassword() {
+    /*jshint validthis: true*/
+    var self = this;
+    // If there is an immutable emailSpecified, the user is coming to the
+    // authentication screen to authenticate with a specific email address.
+    // This is probably a post-verification auth or an assertion->password
+    // level authentication. If the user hits cancel, they go back one state
+    // in the state machine.
+    if (self.emailSpecified && !self.emailMutable) {
+      self.publish("cancel_state");
+    }
+    else {
+      enterEmailState.call(this);
+    }
   }
 
   function forgotPassword() {
@@ -162,7 +290,7 @@ BrowserID.Modules.Authenticate = (function() {
     var email = getEmail();
     if (email) {
       var info = addressInfo || { email: email };
-      this.close("forgot_password", info, info );
+      this.publish("forgot_password", info, info );
     }
   }
 
@@ -173,6 +301,18 @@ BrowserID.Modules.Authenticate = (function() {
       lastEmail = newEmail;
       enterEmailState.call(this);
     }
+
+    /**
+     * The continue button is only available on mobile after the user has
+     * started to type an email address.
+     */
+    if (newEmail) {
+      dom.removeAttr(CONTINUE_BUTTON_SELECTOR, DISABLED_ATTRIBUTE);
+    }
+    else {
+      dom.setAttr(CONTINUE_BUTTON_SELECTOR, DISABLED_ATTRIBUTE,
+        DISABLED_ATTRIBUTE);
+    }
   }
 
   var Module = bid.Modules.PageModule.extend({
@@ -180,25 +320,65 @@ BrowserID.Modules.Authenticate = (function() {
       options = options || {};
 
       addressInfo = null;
-      lastEmail = options.email || "";
 
       var self=this;
 
+      self.checkRequired(options, "rpInfo");
+      var rpInfo = self.rpInfo = options.rpInfo;
+
+      lastEmail = self.emailSpecified = options.email || rpInfo.getEmailHint() || "";
+      self.emailMutable = "email_mutable" in options
+                              ? options.email_mutable : true;
+
+
+      dom.removeClass(BODY_SELECTOR, EMAIL_IMMUTABLE_CLASS);
+      dom.removeAttr(EMAIL_SELECTOR, "disabled");
+
+      self.submit = null;
+
+      /*
+       * If the email is specified and is immutable, it means the user
+       * must enter the fallback password for the specified email.
+       * The user cannot modify the email address.
+       * Possible under the following circumstances:
+       * 1. post-reset-password where the email verification occurs in a second
+       *        browser.
+       * 2. user is signed in to Persona using an address backed by a primary
+       *        IdP and they have just chosen an email address backed by the
+       *        fallback IdP. (assertion->password level upgrade)
+       * 3. email is in transition-to-secondary state and the user just came
+       *        from the email picker.
+       */
+      if (self.emailSpecified && !self.emailMutable) {
+        dom.addClass(BODY_SELECTOR, EMAIL_IMMUTABLE_CLASS);
+        dom.setAttr(EMAIL_SELECTOR, "disabled", "disabled");
+      }
+
+
       dom.addClass(BODY_SELECTOR, AUTHENTICATION_CLASS);
       dom.addClass(BODY_SELECTOR, FORM_CLASS);
-      dom.setInner(RP_NAME_SELECTOR, options.siteName);
+      dom.setInner(RP_NAME_SELECTOR, rpInfo.getSiteName());
+
       dom.setInner(EMAIL_SELECTOR, lastEmail);
+      if (lastEmail)
+        dom.removeAttr(CONTINUE_BUTTON_SELECTOR, DISABLED_ATTRIBUTE);
+
 
       currentHint = null;
       dom.setInner(CONTENTS_SELECTOR, "");
-      dom.hide(".returning,.start");
+
+      // Since the authentication form is ALWAYS in the DOM, there is no
+      // renderForm call which will hide the error, wait or delay screens.
+      // Because one of those may be shown, just show the normal form. See
+      // issue #2839
+      self.hideWarningScreens();
 
       // We have to show the TOS/PP agreements to *all* users here. Users who
       // are already authenticated to their IdP but do not have a Persona
       // account automatically have an account created with no further
       // interaction.  To make sure they see the TOS/PP agreement, show it
       // here.
-      if (options.siteTOSPP) {
+      if (rpInfo.getPrivacyPolicy() && rpInfo.getTermsOfService()) {
         dialogHelpers.showRPTosPP.call(self);
       }
 
@@ -207,23 +387,34 @@ BrowserID.Modules.Authenticate = (function() {
       // element blurs but it has been updated via autofill.  See issue #406
       self.bind(EMAIL_SELECTOR, "change", emailChange);
       self.click(FORGOT_PASSWORD_SELECTOR, forgotPassword);
+      self.click(CANCEL_PASSWORD_SELECTOR, cancelPassword);
 
       Module.sc.start.call(self, options);
-      initialState.call(self, options);
+      chooseInitialState.call(self, options);
     },
 
     stop: function() {
       dom.removeClass(BODY_SELECTOR, AUTHENTICATION_CLASS);
       dom.removeClass(BODY_SELECTOR, FORM_CLASS);
+      dom.removeClass(BODY_SELECTOR, EMAIL_IMMUTABLE_CLASS);
+
+      _.each(hints, function(className) {
+        dom.removeClass("body", className);
+      });
+
+      dom.removeAttr(EMAIL_SELECTOR, "disabled");
+
       Module.sc.stop.call(this);
     }
 
     // BEGIN TESTING API
     ,
     checkEmail: checkEmail,
-    createUser: createSecondaryUser,
+    createUser: createPersonaAccount,
+    createFxAccount: createFxAccount,
     authenticate: authenticate,
-    forgotPassword: forgotPassword
+    forgotPassword: forgotPassword,
+    emailChange: emailChange
     // END TESTING API
   });
 

@@ -27,23 +27,22 @@
   });
 
   asyncTest("create controller cookies disabled - ready returns with false status", function() {
-    network.init({
-      cookiesEnabledOverride: false
-    });
+    network.cookiesEnabledOverride = false;
 
     createController({
       ready: function(status) {
         equal(status, false, "cookies are disabled, false status");
         testHelpers.testErrorVisible();
+        // make sure the message is not escaped. If it is escaped, the anchor
+        // will not be found. see issue #2979
+        ok($("#enable_cookies").length);
         start();
       }
     });
   });
 
   asyncTest("create controller with cookies enabled - ready returns with true status", function() {
-    network.init({
-      cookiesEnabledOverride: true
-    });
+    network.cookiesEnabledOverride = true;
 
     createController({
       ready: function(status) {

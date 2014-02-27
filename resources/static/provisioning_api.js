@@ -1,10 +1,16 @@
 /**
+ * Uncompressed source can be found at:
+ *    https://login.persona.org/provisioning_api.orig.js
+ *
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 (function() {
   "use strict";
+
+  // Define undefined in case the IdP has accidentally redefined undefined.
+  var undefined;
 
   // local embedded copy of jschannel: http://github.com/mozilla/jschannel
   /**
@@ -621,12 +627,23 @@
     };
   })();
 
-  if (!navigator.id) {
+  if (navigator.mozId) {
+    navigator.id = navigator.mozId;
+  } else if (!navigator.id) {
     navigator.id = {};
   }
 
   if (!navigator.id.beginProvisioning || navigator.id._primaryAPIIsShimmed) {
     var ipServer = "https://login.persona.org";
+    // FirefoxOS UA string:
+    // "Mozilla/5.0 (Mobile; rv:18.0) Gecko/18.0 Firefox/18.0
+    // Android UA string:
+    // Mozilla/5.0 (Android; Mobile; rv:18.0) Gecko/18.0 Firefox/18.0
+    if (!!navigator.mozId && (navigator.userAgent.indexOf("(Mobile;") > -1)) {
+      // when running in dev/staging, this will be replaced by
+      // performSubstitution to point to the same as ipServer.
+      ipServer = "https://firefoxos.persona.org";
+    }
 
     var chan = Channel.build({window: window.parent, origin: ipServer, scope: "vep_prov"});
 

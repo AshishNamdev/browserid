@@ -56,7 +56,7 @@ BrowserID.Errors = (function(){
 
     cookiesDisabled: {
       title: gettext("Persona requires cookies to remember you."),
-      message: format(gettext("Please close this window, <a %s>enable cookies</a> and try again"), [" target='_blank' href='" + enableCookiesURL + "'"])
+      noescape_message: format(gettext("Please close this window, <a %s>enable cookies</a> and try again"), [" id='enable_cookies' target='_blank' href='" + enableCookiesURL + "'"])
 
     },
 
@@ -78,10 +78,6 @@ BrowserID.Errors = (function(){
 
     isEmailRegistered: {
       title: "Checking Email Address"
-    },
-
-    isUserAuthenticatedToPrimary: {
-      title: "Checking Whether User is Authenticated with IdP"
     },
 
     logoutUser: {
@@ -162,6 +158,10 @@ BrowserID.Errors = (function(){
 
     xhrError: {
       title: gettext("Communication Error")
+    },
+
+    waitForUserValidation: {
+      title: "Waiting for user validation"
     }
 
   };

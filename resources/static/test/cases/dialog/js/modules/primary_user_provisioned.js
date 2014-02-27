@@ -8,7 +8,6 @@
       bid = BrowserID,
       storage = bid.Storage,
       user = bid.User,
-      network = bid.Network,
       testHelpers = bid.TestHelpers,
       register = testHelpers.register,
       xhr = bid.Mocks.xhr,
@@ -83,7 +82,7 @@
 
   asyncTest("start controller with `add: false` authenticates user", function() {
     register("primary_user_ready", function(msg, info) {
-      network.checkAuth(function(status) {
+      user.checkAuthentication(function(status) {
         equal(status, "assertion", "status is correct");
         start();
       });
@@ -116,8 +115,9 @@
   });
 
   asyncTest("start controller with `add: true` adds email to user's list", function() {
+    var primaryUserReadyCalled;
     register("primary_user_ready", function(msg, info) {
-      start();
+      primaryUserReadyCalled = true;
     });
 
     xhr.useResult("valid");
@@ -126,7 +126,9 @@
       add: true,
       assertion: "test_assertion",
       ready: function(status) {
-        equal(true, status, "valid status");
+        equal(status, true);
+        equal(primaryUserReadyCalled, true);
+        start();
       }
     });
   });

@@ -7,19 +7,28 @@ BrowserID.Modules.CheckRegistration = (function() {
   var bid = BrowserID,
       user = bid.User,
       dom = bid.DOM,
-      errors = bid.Errors;
+      errors = bid.Errors,
+      SCREEN_SELECTOR = "#wait",
+      SKIN_CLASS = "black";
+
 
   var Module = bid.Modules.PageModule.extend({
     start: function(options) {
       var self=this;
       options = options || {};
 
-      self.checkRequired(options, "email", "siteName");
+      self.checkRequired(options, "email", "rpInfo");
       var templateData = {
         email: options.email,
-        required: options.required,
-        siteName: options.siteName
+        siteName: options.rpInfo.getSiteName()
       };
+
+      // The error screen normally has a button row. Hide the button row before
+      // rendering the error or CSS transitions make the content shift around.
+      dom.addClass(SCREEN_SELECTOR, SKIN_CLASS);
+
+      // The laoding screen may be shown right now. If it is, get rid of it.
+      self.hideWarningScreens();
       self.renderWait("confirm_email", templateData);
 
       self.email = options.email;
@@ -35,6 +44,7 @@ BrowserID.Modules.CheckRegistration = (function() {
     startCheck: function(oncomplete) {
       var self=this;
       user[self.verifier](self.email, function(status) {
+        dom.removeClass(SCREEN_SELECTOR, SKIN_CLASS);
         self.close(self.verificationMessage, { mustAuth: status === "mustAuth" });
 
         oncomplete && oncomplete();

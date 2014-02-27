@@ -5,7 +5,6 @@
   "use strict";
 
   var bid = BrowserID,
-      network = bid.Network,
       user = bid.User,
       xhr = bid.Mocks.xhr,
       WinChanMock = bid.Mocks.WinChan,
@@ -29,7 +28,7 @@
     docMock = winMock.document;
 
     pageHelpers.init({
-      win: winMock
+      window: winMock
     });
 
     options = options || {};
@@ -55,6 +54,38 @@
     }
   });
 
+  function testEmailSubmitKnownSecondary(email) {
+    $("#email").val(email);
+
+    controller.emailSubmit(function() {
+      testHasClass("body", "known_secondary", "known_secondary class added to body");
+      equal(controller.submit, controller.signInSubmit, "submit has changed to signInSubmit");
+      start();
+    });
+  }
+
+  function testSignInSubmitWithKnownSecondary(email, normalizedEmail) {
+    $("#email").val(email);
+    $("#password").val("password");
+
+    controller.signInSubmit(function() {
+      equal(docMock.location, "/", "user signed in, page redirected");
+      start();
+    });
+  }
+
+  function testSignUpSubmitWithUnknownSecondary(email, normalizedEmail) {
+    $("#email").val(email);
+
+    controller.emailSubmit(function() {
+      $("#password, #vpassword").val("password");
+      controller.signUpSubmit(function(signUpEmail) {
+        equal(signUpEmail, normalizedEmail);
+        start();
+      });
+    });
+  }
+
   function testUserNotSignedIn(extraTests) {
     controller.signInSubmit(function() {
       testDocumentNotRedirected(docMock, "user not signed in");
@@ -70,6 +101,14 @@
       start();
     });
   }
+
+  function testInvalidPassword(password) {
+    $("#email").val("registered@testuser.com");
+    $("#password").val(password);
+
+    testUserNotSignedIn();
+  }
+
 
   asyncTest("start with no email stored - nothing fancy", function() {
     createController({
@@ -139,7 +178,7 @@
   });
 
   asyncTest("address with XHR error - show error screen", function() {
-    xhr.useResult("xhrError");
+    xhr.useResult("ajaxError");
     $("#email").val("unregistered@testuser.com");
 
     controller.emailSubmit(function() {
@@ -160,14 +199,11 @@
   });
 
   asyncTest("known_secondary: emailSubmit - known_secondary added to body", function() {
-    xhr.useResult("known_secondary");
-    $("#email").val("registered@testuser.com");
+    testEmailSubmitKnownSecondary("registered@testuser.com");
+  });
 
-    controller.emailSubmit(function() {
-      testHasClass("body", "known_secondary", "known_secondary class added to body");
-      equal(controller.submit, controller.signInSubmit, "submit has changed to signInSubmit");
-      start();
-    });
+  asyncTest("known_secondary with email that must be normalized: emailSubmit - known_secondary added to body", function() {
+    testEmailSubmitKnownSecondary("REGISTERED@TESTUSER.COM");
   });
 
   asyncTest("primary, authenticated with IdP: emailSubmit - user immediately signed in", function() {
@@ -176,7 +212,7 @@
     $("#email").val("registered@testuser.com");
 
     controller.emailSubmit(function() {
-      network.checkAuth(function(status) {
+      user.checkAuthentication(function(status) {
         equal(status, "assertion", "user is authenticated with an assertion");
         equal(docMock.location, "/", "user signed in, page redirected");
         start();
@@ -197,23 +233,18 @@
   });
 
   asyncTest("signInSubmit with valid email and password", function() {
-    $("#email").val("registered@testuser.com");
-    $("#password").val("password");
+    testSignInSubmitWithKnownSecondary("registered@testuser.com",
+        "registered@testuser.com");
+  });
 
-    controller.signInSubmit(function() {
-      equal(docMock.location, "/", "user signed in, page redirected");
-      start();
-    });
+  asyncTest("signInSubmit with valid email that must be normalized and password", function() {
+    testSignInSubmitWithKnownSecondary("REGISTERED@TESTUSER.COM",
+        "registered@testuser.com");
   });
 
   asyncTest("signInSubmit with valid email with leading/trailing whitespace and password", function() {
-    $("#email").val("  registered@testuser.com  ");
-    $("#password").val("password");
-
-    controller.signInSubmit(function() {
-      equal(docMock.location, "/", "user signed in, page redirected");
-      start();
-    });
+    testSignInSubmitWithKnownSecondary("  registered@testuser.com  ",
+        "registered@testuser.com");
   });
 
   asyncTest("signInSubmit with missing email", function() {
@@ -223,13 +254,7 @@
     testUserNotSignedIn();
   });
 
-  asyncTest("signInSubmit with missing password", function() {
-    $("#email").val("registered@testuser.com");
-    $("#password").val("");
-
-    testUserNotSignedIn();
-  });
-
+  testHelpers.testInvalidAuthenticationPassword("signInSubmit with", testInvalidPassword);
 
   asyncTest("signInSubmit with bad username/password", function() {
     xhr.useResult("invalid");
@@ -249,23 +274,18 @@
 
 
   asyncTest("signUpSubmit with valid email and password", function() {
-    $("#email").val("registered@testuser.com");
-    $("#password, #vpassword").val("password");
+    testSignUpSubmitWithUnknownSecondary("unregistered@testuser.com",
+        "unregistered@testuser.com");
+  });
 
-    controller.signUpSubmit(function(status) {
-      ok(status, "signUpSubmit success");
-      start();
-    });
+  asyncTest("signUpSubmit with valid email that must be normalized and password", function() {
+    testSignUpSubmitWithUnknownSecondary("UNREGISTERED@TESTUSER.COM",
+        "unregistered@testuser.com");
   });
 
   asyncTest("signUpSubmit with valid email with leading/trailing whitespace and password", function() {
-    $("#email").val("  registered@testuser.com  ");
-    $("#password, #vpassword").val("password");
-
-    controller.signUpSubmit(function(status) {
-      ok(status, "signUpSubmit success");
-      start();
-    });
+    testSignUpSubmitWithUnknownSecondary("  unregistered@testuser.com  ",
+        "unregistered@testuser.com");
   });
 
   asyncTest("signUpSubmit with missing email", function() {
@@ -275,44 +295,18 @@
     testUserNotSignedUp();
   });
 
-  asyncTest("signUpSubmit with missing password", function() {
-    $("#email").val("registered@testuser.com");
-    $("#password").val("");
-    $("#vpassword").val("password");
-
-    testUserNotSignedUp();
-  });
-
-  asyncTest("signUpSubmit with missing vpassword", function() {
-    $("#email").val("registered@testuser.com");
-    $("#password").val("password");
-    $("#vpassword").val("");
-
-    testUserNotSignedUp();
-  });
-
-  asyncTest("signUpSubmit with too short of a password", function() {
-    $("#email").val("registered@testuser.com");
-    var pass = testHelpers.generateString(bid.PASSWORD_MIN_LENGTH - 1);
-    $("#password").val(pass);
-    $("#vpassword").val(pass);
-
-    testUserNotSignedUp();
-  });
-
-  asyncTest("signUpSubmit with too long of a password", function() {
-    $("#email").val("registered@testuser.com");
-    var pass = testHelpers.generateString(bid.PASSWORD_MAX_LENGTH + 1);
-    $("#password").val(pass);
-    $("#vpassword").val(pass);
-
-    testUserNotSignedUp();
-  });
-
   asyncTest("signUpSubmit with bad username/password", function() {
     xhr.useResult("invalid");
     $("#email").val("registered@testuser.com");
     $("#password, #vpassword").val("password");
+
+    testUserNotSignedUp();
+  });
+
+  testHelpers.testInvalidPasswordAndValidationPassword("signUpSubmit with", function(password, vpassword) {
+    $("#email").val("registered@testuser.com");
+    $("#password").val(password);
+    $("#vpassword").val(vpassword);
 
     testUserNotSignedUp();
   });
@@ -362,7 +356,7 @@
         user.resetCaches();
 
         controller.primaryAuthComplete(null, "yar", function() {
-          network.checkAuth(function(status) {
+          user.checkAuthentication(function(status) {
             equal(status, "assertion", "user is authenticated with an assertion");
             equal(docMock.location, "/", "user signed in, page redirected");
             start();

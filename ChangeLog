@@ -1,5 +1,330 @@
-current train:
-  *
+current-train:
+
+train-2013.11.06:
+  * Fix nodemailer, using new API, and email.js cleanup: #4000
+  * Batch server-side KPI requests to kpiggybank: #3986
+  * Add message that PhantomJS warnings can be ignored: #3928
+
+train-2013.10.23:
+  * Add support for new 'goldilocks' API: #3961
+  * Allow applications to define additional claims inside assertions: #2910
+  * Massive overhaul of logging to enable unified metrics: #3529
+  * Add metrics to measure well-known lookup: #1704
+  * Add metrics to count email verification: #3528, #3920
+  * Fix double-count problem with sign_in roundtrip metrics: #3970
+  * Enforce loggedInUser type inside navigator.id.watch: #2647
+  * Update various npm dependencies: #3981, #3972, #3973, #3989
+  * Remove zerigo from deploy script: #3984
+  * Simplify app routing: #3980
+
+train-2013.10.09:
+  * Get Persona working on IE11: #3593
+  * Remove obsolete localstorage fields: #3855
+  * Refactoring and visual tweaks: #3940, #3712
+  * Bump awsbox version to 0.6.2: #3942
+  * Don't bother parsing include.js if native support exists: #3924
+  * Email tweaks: #3957
+  * Improve documentation: #3923, #3963
+  * Fix a win32 paths-with-spaces bug: #3962
+  * Fix an intermittent broken test on linux+ node > 0.10.16: #3912
+
+train-2013.09.25:
+  * RP Branded verification emails - if a site declares siteLogo and backgroundColor, verification emails will be styled with those instead of Persona branding: #3857
+  * Fix iOS7 users being logged out on RP page refresh: #3914
+  * Fix certs being requested from the fallback IdP for addresses that are suppored by primary IdPs: #3625
+  * Always decode the returnTo URL before redirecting users: #3906
+  * Use Fira Sans as the default font for FirefoxOS: #3885
+  * Update awsbox to use Route53 and node 0.10.x by default: #3901, #3908
+  * Update vows to fix Selenium on node 0.10.x: #3900
+  * Update winston to work with node 0.10.x: #3893
+  * Update package.json with license, author, homepage and description: #3881
+  * Update Ubuntu setup instructions: #3910
+  * Code cleanup & refactoring: #3880
+
+train-2013.09.11:
+  * Add support for experimental_emailHint - pre-fill email input box or pre-select an email address when dialog opens: #3843
+  * Fix backgroundColor color clash with text color: #3837
+  * Add support for "one time certs" - if a user has not selected "Yes" to "Is this your computer", clear cert as soon as it is used to generate an assertion: #3840
+  * If user has no email addresses after sync, sign them out: #3820
+  * Ensure only one GET request to a URL can be in flight at a time: #3877
+  * Upgrade to qunit 1.12.0 to ensure all exceptions are caught in frontend unit tests: #3836, #3839
+  * Remove window.unload event from KPI event stream: #3864
+  * Improved logging/test reporting: #3862
+  * Add MPL2 license header missing from some files: #3875
+
+train-2013.08.28:
+  * Add redirect flow, fixing Persona on Chrome for iOS and Windows Phone: #2034
+  * Ensure ToS/PP links are legible for any backgroundColor: #3725
+  * Add Webmaker example RP, replacing Times Crossword app: #3716
+  * If an unverified user was created via an allowUnverified RP, ensure that user can sign into non-allowUnverified RPs: #3811
+  * Update mobile button styles to match FXOS style guide: #3635
+  * Add MPL2 license header missing from some files: #3715
+  * Update lockdown version: #3303
+  * Fix duplicate key in unit tests: #3808
+  * Visual tweaks: #3636, #3814, #3813, #3765
+  * Copy tweaks: #3823, #3833
+
+train-2013.08.15:
+  * Relax restrictions on siteLogo - allow siteLogo from any https URL or image dataURI: #3705, #3743
+  * Allow CSV list of platforms when running Selenium tests: #3748
+  * Fix mobile layout of unsupported_dialog and cookies_disabled: #3783, #3784, #3785
+  * Record frontend test details in a temp file when run from Selenium tests: #3780
+  * Fix "noSuchWindow" error for new Chrome Selenium driver: #3683, #3788
+  * Fix invalid CSS: #3765, #3791
+  * Ensure include.orig.js is available on the staging and production servers: #3212, #3795
+  * Refactorings and other improvements: #3751, #3683, #3750, #3758, #3759, #3788, #3774
+
+train-2013.07.31:
+  * Nicely warn primary IdP users that third-party cookies must be enabled: #3520
+  * Update copy and design of persona emails: #1935
+  * Fix bugs in onmatch and oncancel callbacks: #3701, #3170, #3463
+  * Properly handle primaries when entered with uppercase initial letter in domain: #3728, #3741, #3739, #3729
+  * Improvements to the dialog flow: #3708, #3689, #3609, #3671, #3691
+  * Visual tweaks: #3668, #3677, #3668, #3573, #3662
+  * Test improvements: #3733, #3720, #3719, #3665
+  * Refactorings and other minor improvements: #3694, #3740, #3666, #3695, #3718, #3697, #3630, #3670
+
+train-2013.07.17:
+  * Simplify tooltip copy and replace tooltips with inline notifications: #3154, #3607
+  * [FXOS] Make TOS/PP links same size as surrounding text: #3634
+  * Ensure dialog hides the 'checking with your email provider' screen after that check completes: #3638
+  * Remove eval() from i18n workflow by passing i18n-abide .js, not .json files: #3672, #2501
+  * Fix lockdown & rpm build errors by bumping i18n-abide version number to semver-compatible string: #3658, #3639
+  * Refactor xhr code into a module, removing global state, and squashing an intermittent unit testing bug: #3647
+  * Prevent Chrome from logging spurious KPI errors by aborting in-flight xhrs on page unload: #2423, #3618
+  * On each Travis-CI run, record linux, mysql, and phantomjs versions for future reference: #3626
+
+train-2013.07.03:
+  * [FXOS] Add support for primary IdPs to FirefoxOS: #3572, #3592, #3566, #3567
+  * w00t! Enable RP dialog custom branding with new parameter, 'backgroundColor': #3589
+  * Add Spanish translation of TOS/PP & infrastructure to support additional TOS/PP l10n: #3604
+  * Fix another occurrence of 'native' causing problems on old Android: #3595
+  * Display RP name, not 'undefined', in primary-upgrade dialog screen: #3621
+  * If reporting a custom error type to KPIs, use a meaningful field: #3584
+  * Redefine 'undefined' in case the underlying page broke it: #3598
+  * If a domain has transitioned between primary/secondary, don't reuse the old cert: #3515
+  * If a primary can't be reached, don't cache this result--let the user immediately retry: #3155
+  * Adjust caching headers on dynamically-generated pages to force revalidation: #3547, #3582
+  * Add 90 day future expires header to favicon.ico: #2482
+  * Redirect legacy endpoints /signin, /signup, /forgot to homepage: #3467
+  * Improve Travis-CI docs: #3599
+  * Add SIGINT handler, so interrupted Selenium tests immediately dump useful output on POSIX systems: #3570
+
+train-2013.06.19:
+  * Correctly transition users from primary IdP-based to fallback IdP-based accounts: #3551
+  * Bump version in package.json and add additional metadata: #3555
+  * Don't use Array.prototype.indexOf, as it's missing in IE8: #3548
+  * Improve script used to inspect contents of localstorage: #3542
+  * Ensure all expected KPI fields are present: #2280
+  * Refactor code that handles transitions between primary and the fallback IdP: #3517, #3543
+  * Improve KPI usage metrics by counting users who only open the Persona dialog once, and don't complete registration: #3306
+  * Avoid using ES3 reserved word 'native', it offends Android 2.2: #3522
+  * [FXOS] Add FXOS user-agent string to list of browsers recognized by KPI (client-side usage metrics): #3373
+  * [FXOS] UI tweak to avoid FXOS popping an error toolitp prematurely: #3502
+  * [FXOS] Ensure tooltips are rendered on screen, specifically on FxOS: #3496
+  * Serve P3P headers to IE, bringing its third-party cookie behavior in line with other browsers: #2340, #3417
+  * Move saucelabs Selenium tests to newer versions of browsers: #3510
+  * Add a new example RP for local testing of navigator.id.get: #3507
+  * Update terms of service to indicate that educational and government use of Persona is generally ok: #3509
+  * Better support RPs by console.logging, not swallowing, errors thrown by RP page inside watch() callbacks: #3374
+  * Improve backend test stability by delaying daemon shutdown: #3465
+  * UI tweaks: #3426
+  * Upgrade to awsbox 0.4.5, with improved security and error handling: #3483
+  * Show client local timestamp on dialog error screen: #3478
+
+train-2013.06.05:
+  * Fix primary IdP support on FirefoxOS: #3461
+  * Allow firefoxos.persona.org & login.persona.org to force issuers: #3382
+  * Allow TOS/PP pages to be served over HTTP, not HTTPS: #3469
+  * Configure ephemeral instances to send KPI data to a kpiggybank server they can reach: #3471
+  * Updates to make persona compatible with node 0.10.x: #3482
+  * Fix typo in verify-assertion script: #3449
+  * Fix new_user KPI gathering for two scenarios: #3359, #3459
+    * namely, new FirefoxOS users and users who bail at the 'set password' step
+  * Refactor & simplify handling of primary users in dialog: #3184
+
+train-2013.05.22:
+  * fix persona in ActiveX-based browsing environments: #3383
+  * performance improvement: prefetch resources in communication iframe: #3273
+  * test fixes: #3389, #3385, #3411, #3424
+  * ui improvements:
+    * make spinners spin: #3394, #3342
+    * fix error/wait/delay screen transparent background: #3393
+    * improved spinner styling: #3404, #3349
+    * set password input width fix: #3409
+    * buttons use available space: #3407
+    * TOS/PP display fixes: #3413, #3442
+    * fix white screen when clicking through invalid verification links: #3362
+    * many general UI improvements for mobile: #3410
+    * focus email address input on dialog startup: #3424
+    * ensure buttons are re-enabled when appropriate: #3431
+    * change mobile font to Feura Sans: #3430
+  * fix users unable to sign out: #3386
+  * detect when dialog closes even if on a IdP's page: #1773
+  * IE8 no longer buries dialog: #3423
+
+train-2013.05.08:
+  * SCHEMA CHANGE: the user table gained an integer field: auth
+  * CONFIG CHANGE: in production we need "forcible_issuers": [ "login.persona.org" ]
+  * FirefoxOS specific changes and features:
+    * experimental_forceAuthentication feature to force re-authentication: #3312
+    * experimental_forceIssuer feature to disable federation
+    * experimental_allowUnverified feature to support "unverified" email addresses.
+    * Show the Persona TOS/PP in the dialog without headers and footers when experimental_inlineTermsOfService is specified: #2905
+  * Test improvements: #3310
+  * Fixes to the key performance indicator mechanism: 3319
+  * Mobile styling improvements (motivated by FirefoxOS): #3341, #3343, #3355, #3350, #3352, #3354
+  * Fix an issue where slow database replication could block primary logins: #3309
+  * Require a password reset when too many failed password attempts are made: #2656
+  * Don't reset sessions to ephemeral duration after email verification: #3336
+  * (hotfix 2013.05.14) verifier parameters for forceIssuer and allowUnverified now have an experimental_ prefix
+
+train-2013.04.26:
+  * up to 25% performance improvement on mobile (delayed loading of crypto code): #3060, #3287
+  * when user is verifying email, show nothing on persona.org, just verify and redirect: #2871
+  * better handling of disabled 3rd party cookies: #2308, #2999
+  * _experimental_forceAuthentication flag added to support FirefoxOS: #3235
+  * add explicit cache headers on .well-known/browserid #3249
+  * "internal" api improvements for FirefoxOS: #3238
+  * main site now uses the dialog: issue #900
+  * UI improvements:
+    * improve readability of nav links in the header nav: #3223
+    * better display of "this is not me" button in non-english locales: #3250
+    * refine button content and organization on login.persona.org: #3196, #3197
+    * dialog no longer steals focus on FF/linux/gnome: #3211
+  * Code/infrastructure improvements:
+    * ignore specific selenium tests with a command line option: #3259
+    * helpers.log() function now takes handles multiple arguments: #3237
+    * remove issue assignment round-robin script, obsolesced by process improvements: #3205
+    * remove dep. on node-inspector: #3268
+    * remove confusing console output during frontend tests: #3290
+    * better error reporting to KPI: #3302
+    * make it harder to poison user caches during deployment #3315
+
+train-2013.04.12:
+  * Key Performance Indicator (anonymous metrics) improvements: #3148
+  * l10n fix - "Removing the last email..." string now translated: #2492
+  * UI improvements:
+    * dynamic scaling of "is this your computer" button: #2066
+    * fix double escaping of website name: #3173
+    * fix flash of wait screen on IE8/9: #2618, #2492
+    * (mobile) shrink footer text on mobile: #3129
+  * Improve frontend code versioning (to detect frontend/backend code mismatch during deployment): #3125
+  * Fix npm install errors related to automation test dependencies: #3160
+  * Keyboard accessibility improvment - allow tab from email/password to submit button: #3079
+  * Potential server performance improvement: don't use the node.js global connection agent anywhere: #3217
+  * Test improvements:
+    * improve usage of selenium test runner: #3204
+    * Add KPI load testing documentation: #3203
+    * Add a script to post an assertion to a verifier and check response: #3209
+    * Improve check_primary_support script: #3185
+
+train-2013.03.29:
+  * Improve privacy policy! Clarify that we don't retain a list of sites users visit, plus other tweaks: #2922
+    * Mozilla Persona: respecting users' privacy since 2011 <3
+  * Refactor network.js and user.js to separate user state from network code: #3134
+  * Remove unused winchan code from communication_iframe, saving space: #3109
+  * Tweak background image URLs to prevent 404s on IE8: #1736
+  * Update connect-fonts-opensans dependency, fixing local font lookup on Mac OS: #3113
+  * Fix HTML double-escaping on cookies_disabled dialog screen: #2979
+  * Ensure KPI doesn't lose info gathered prior to session_context firing: #3104
+  * Add logging for KPI backend responses: #3100
+  * Test improvements:
+    * split out local selenium configs and use platform-agnostic browser identifiers: #3118
+    * enable local simultaneous selenium testing with multiple firefox binaries: #3138
+    * automation-tests README enhancements: #3117
+  * (hotfix 2013.04.01) remove build of automation-tests due to error messages in build: issue #3160
+  * (hotfix 2013.04.03) [dev,train-2013.03.28] expired certificates are not being invalidated. #3153 (on right branch now).
+  * (hotfix 2013.04.03) After verifying email addition, original dialog does not sign user in and close. #3172
+  * (hotfix 2013.04.03) [signin] - dialog does not close after verifying second secondary address when logged in with primary. #3178
+
+train-2013.03.15:
+  * When a user types an email, it's no longer case sensitive: #3078, #2891, #2866, #2049, #2551, #1104
+  * IDP API improvment - .raiseProvisioningFailure() requires no specific string argument: #2339
+  * internal_api (for embedding) should not require callbacks to have curry() method on prototype: #3067
+  * speed improvment - 8% reduction in resources loaded by sites using .watch() - #3060
+  * Test improvements:
+    * better error messages from automation test runner: #3095
+    * all tests npm depndencies are installed at top level npm install: #3084
+    * list of platforms we run on saucelabs harmonized with documented names: #3072
+  * Infrastructure improvments:
+    * load testing improvements for testing KPI mechanisms: #3064
+    * generate include.js more frequently: #3061
+
+train-2013.03.01:
+  * Remove rollback code for new, improved password reset flow: #3018
+  * Fix double-escaping of RP site name in dialog: #3007
+  * Add optional onmatch callback to id.watch, fired if the browser's state matches loggedInUser: #2648
+  * Aid new RP debugging by throwing an error if nav.id.request is called before nav.id.watch: #3023
+  * Split include.js to enable one winchan/jschannel to be used everywhere: #3056
+  * Test improvements:
+    * Fix reference error in front-end unit tests: #3032
+    * Re-enable remove-email selenium test: #3046
+    * Add unit tests to ensure fonts are served OK: #3052
+    * Add KPI to load-gen: #3042
+  * (hotfix 2013.03.15) fix certificate re-provisioning for primary email addresses: #3091
+
+train-2013.02.15:
+  * convert to optimized locale-specific fonts - 50% reduction in resource footprint: #2996
+  * upgrade toobusy to repair win32 support: #2978
+  * improve language for account cancel confirmation: #2462
+  * logging improvements: #2985
+  * test improvments: #2994
+  * add new APIs to prepare for improved reset flow: #1232, #2937
+  * increase STS to allow for better load performance in firefox (HSTS preload): #2903
+
+train-2013.02.01:
+  * Improve handling of optional configuration (proxy_idps): #2790
+  * Code cleanup (tooltips): #2762
+  * Only show ToS/PP when needed: #2669
+  * Improve determination of current software version:
+  * Fix bad UX when enters short password on email verification: #2943
+  * Increase Strict-Transport-Security max-age:
+  * Image optimization: #2957
+  * Improve script portability: #2537
+  * Test coverage and fixes: #2920, #2963, #2968, #2974, #2973
+  * Logging cleanup: #2967
+
+train-2013.01.18:
+  * upgrade to node.js 0.8.17
+  * metrics (KPI) improvements: #1931
+  * code cleanup: #2825, #2762
+  * test improvements: #2745, #2832, #2828, #2846, #2857, #2807
+  * fix non-functional cancel button when email provider is broken: #2839
+  * fix bug in verifier where if default port is provided verification would fail with 'port mismatch': bug 820446
+  * fixes related to gracefully handling of email providers implementing or removing persona support: #2840
+  * added debugging scripts: #2880
+  * update to newer versions of dependencies: #2893 #2911
+  * eliminate innocuous but annoying 500 errors when bogus URLs are requested: #2887
+  * fix bug where users cannot delete accounts when staged but unverified emails exist: #2919
+  * Allow logout to be called before .request or .watch: #2529
+  * Blocking requests when the server is too busy: #2722
+  * improvements to load generation utility
+  * fix one wrong password blocking user from verifying email in different browser: #2943
+
+train-2012.12.07:
+  * persona now handles gracefully (UX and code) when email providers implement or remove support: #2606, #2607, #2608, #2678, #2404, #2688, #2674, #2717, #2770, #2779, #2794, #2795, #2836, #2834, #2839, #2838
+  * email provider may place 'disabled: true' in support doc to disable persona support: #2687
+  * allow email providers a "grace period" when they go offline where we will not step in and issue certs: #2689
+  * piles of automated test improvments: #2740, #2699, #2741, #2784, #2768, #2805, #2817, #2819
+  * KPI improvements, measure dialog startup time: #2557
+  * trim whitespace from typed in emails: #2781
+  * unit test improvements: #2759
+  * dump more environmental information at process start: #2800
+  * CEF logging: #2799
+
+train-2012.11.23:
+  * New selenium tests authored in node.js merged.
+  * Verifier rejects requests that don't supply a proper hostname: bug #806577
+  * (hotfix 2012.12.03) nodejs version in .spec file >= 0.8.12
+  * (hotfix 2012.12.05) when an email is re-staged, ensure the latest password is used: issue #2822
+
+train-2012.11.09:
+  * code cleanup, including jshinting of source and code coverage: #2643, #2272
+  * principal domain now supplied as a query argument when fetching .well-known documents: #2565
+  * embedded IE running in compat mode (like in Lotus Notes) now works for email verification: #2566
+  * (hotfix 2012.11.15) focus email field when dialog loads: #2711
+  * (hotfix 2012.11.28) browserid.spec designates wrong version of nodejs: #2791
 
 train-2012.10.26:
   * Upgrade to Node.JS 0.8.12
@@ -20,6 +345,7 @@ train-2012.10.26:
   * Fix class of sporatic dialog stalls at "Connection to Persona": #2629
   * Fix regression: "Dialog fails to show authenticate screen on Android": #2638
   * Fix regression: siteName not being displayed in dialog: #2634
+  * (hotfix 2012.11.05) fix missing CONTRIBUTORS and renaming of en-US: #2682
 
 train-2012.10.12:
   * Fix IE failing when authenticating with IdP from main site's /signin: #2287

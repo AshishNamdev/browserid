@@ -11,7 +11,6 @@
   module("common/js/helpers", {
     setup: function() {
       testHelpers.setup();
-      bid.Renderer.render("#page_head", "site/signin", {});
     },
 
     teardown: function() {
@@ -20,33 +19,38 @@
   });
 
   test("getAndValidateEmail with valid email", function() {
-    $("#email").val("testuser@testuser.com");
-    var email = helpers.getAndValidateEmail("#email");
+    bid.Renderer.render("#page_head", "add_email", {});
+    $("#newEmail").val("testuser@testuser.com");
+    var email = helpers.getAndValidateEmail("#newEmail");
 
     equal(email, "testuser@testuser.com", "valid email returns email");
   });
 
   test("getAndValidateEmail with valid email with leading and trailing whitespace", function() {
-    $("#email").val(" testuser@testuser.com ");
-    var email = helpers.getAndValidateEmail("#email");
+    bid.Renderer.render("#page_head", "add_email", {});
+    $("#newEmail").val(" testuser@testuser.com ");
+    var email = helpers.getAndValidateEmail("#newEmail");
 
     equal(email, "testuser@testuser.com", "valid email with leading/trailing whitespace returns trimmed email");
   });
 
   test("getAndValidateEmail with invalid email returns null", function() {
-    $("#email").val("testuser");
-    var email = helpers.getAndValidateEmail("#email");
+    bid.Renderer.render("#page_head", "add_email", {});
+    $("#newEmail").val("testuser");
+    var email = helpers.getAndValidateEmail("#newEmail");
 
     strictEqual(email, null, "invalid email returns null");
   });
 
   test("getAndValidateEmail with invalid target returns null", function() {
+    bid.Renderer.render("#page_head", "add_email", {});
     var email = helpers.getAndValidateEmail("#nonexistent");
 
     strictEqual(email, null, "invalid target returns null");
   });
 
   test("getAndValidatePassword with valid password returns password", function() {
+    bid.Renderer.render("#page_head", "set_password", { password_reset: false, transition_no_password: false, email: "testuser@testuser.com", cancelable: false, fxaccount: false });
     $("#password").val("password");
     var password = helpers.getAndValidatePassword("#password");
 
@@ -54,6 +58,7 @@
   });
 
   test("getAndValidatePassword with invalid password returns null", function() {
+    bid.Renderer.render("#page_head", "set_password", { password_reset: false, transition_no_password: false, email: "testuser@testuser.com", cancelable: false, fxaccount: false });
     $("#password").val("");
     var password = helpers.getAndValidatePassword("#password");
 
@@ -61,6 +66,7 @@
   });
 
   test("getAndValidatePassword with invalid target returns null", function() {
+    bid.Renderer.render("#page_head", "set_password", { password_reset: false, transition_no_password: false, email: "testuser@testuser.com", cancelable: false, fxaccount: false });
     var password = helpers.getAndValidatePassword("#nonexistent");
 
     strictEqual(password, null, "invalid target returns null");
@@ -155,5 +161,70 @@
     equal(loggedMessage, "test message", "correct message logged");
 
     window.console = nativeConsole;
+  });
+
+  test("isObject", function() {
+    equal(helpers.isObject({}), true);
+    equal(helpers.isObject(new Object()), true);
+    equal(helpers.isObject(""), false);
+    equal(helpers.isObject([]), false);
+  });
+
+  test("isString", function() {
+    equal(helpers.isString(""), true);
+    equal(helpers.isString(new String()), true);
+    equal(helpers.isString({}), false);
+    equal(helpers.isString([]), false);
+  });
+
+  test("isFunction", function() {
+    var someFunc = function() {};
+    equal(helpers.isFunction(someFunc), true);
+    equal(helpers.isFunction(function named() {}), true);
+    equal(helpers.isFunction({}), false);
+    equal(helpers.isFunction([]), false);
+    // new Function() {} is blocked by CSP. Do not even test for it.
+  });
+
+  test("isArray", function() {
+    var someFunc = function() {};
+    equal(helpers.isArray([]), true);
+    equal(helpers.isArray(new Array()), true);
+    equal(helpers.isArray({}), false);
+    equal(helpers.isArray(""), false);
+    equal(helpers.isArray(arguments), false);
+  });
+
+  test("isNull", function() {
+    var und;
+    equal(helpers.isNull([]), false);
+    equal(helpers.isNull(new Array()), false);
+    equal(helpers.isNull(""), false);
+    equal(helpers.isNull(0), false);
+    equal(helpers.isNull(und), false);
+    equal(helpers.isNull(false), false);
+
+    equal(helpers.isNull(null), true);
+  });
+
+  test("isUndefined", function() {
+    var und;
+    equal(helpers.isUndefined([]), false);
+    equal(helpers.isUndefined(new Array()), false);
+    equal(helpers.isUndefined(""), false);
+    equal(helpers.isUndefined(0), false);
+    equal(helpers.isUndefined(null), false);
+    equal(helpers.isUndefined(false), false);
+
+    equal(helpers.isUndefined(und), true);
+  });
+
+  test("redirect", function() {
+    var win = {};
+    helpers.redirect(win, "http://example.com");
+    equal(win.location, "http://example.com");
+
+    helpers.redirect(win, "http://example.com?don%2527t");
+    equal(win.location, 'http://example.com?don%27t');
   });
 }());

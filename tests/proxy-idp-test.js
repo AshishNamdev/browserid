@@ -34,20 +34,30 @@ process.env['SHIMMED_PRIMARIES'] =
   'example.domain|http://127.0.0.1:10005|' + TEST_DOMAIN_PATH +
   ',real.primary|http://127.0.0.1:10005|' + TEST_DOMAIN_PATH;
 
-
 start_stop.addStartupBatches(suite);
 
 suite.addBatch({
   "proxy_idp configuration": {
     topic: wsapi.get('/wsapi/address_info', {
-        email: 'bartholomew@yahoo.com'
+      email: 'bartholomew@yahoo.com'
     }),
-    " acts as delegated authority": function(err, r) {
+    "acts as delegated authority": function(err, r) {
       assert.strictEqual(r.code, 200);
       var resp = JSON.parse(r.body);
       assert.strictEqual(resp.auth, "http://127.0.0.1:10005/sign_in.html");
       assert.strictEqual(resp.prov, "http://127.0.0.1:10005/provision.html");
       assert.strictEqual(resp.type, "primary");
+      assert.strictEqual(resp.issuer, "example.domain");
+    }
+  },
+  "proxy_idps with uppercase domains": {
+    topic: wsapi.get('/wsapi/address_info', {
+      email: 'bartholomew@YAHOO.COM'
+    }),
+    "works": function(err, r) {
+      var resp = JSON.parse(r.body);
+      assert.strictEqual(resp.type, 'primary');
+      assert.strictEqual(resp.issuer, 'example.domain');
     }
   }
 });
@@ -61,7 +71,7 @@ suite.addBatch({
       assert.strictEqual(r.code, 200);
       var resp = JSON.parse(r.body);
       assert.strictEqual(resp.type, "secondary");
-      assert.strictEqual(resp.known, false);
+      assert.strictEqual(resp.state, 'unknown');
     }
   }
 });
@@ -77,6 +87,7 @@ suite.addBatch({
       assert.strictEqual(resp.auth, "http://127.0.0.1:10005/sign_in.html");
       assert.strictEqual(resp.prov, "http://127.0.0.1:10005/provision.html");
       assert.strictEqual(resp.type, "primary");
+      assert.strictEqual(resp.issuer, "real.primary");
     }
   }
 });
@@ -130,11 +141,12 @@ var assertSecondary = function (res) {
 // Now let's test the other part of this puzzle - that users can log in with certs issued
 // by our proxy idp servers. (for which the issuer is login.persona.org).
 var primaryUser = new primary({
-  email: "bartholomew@yahoo.com",
-  domain: "127.0.0.1",
+  email: "bartholomew@YAHOO.COM",
+  domain: "example.domain",
   privKey: jwcrypto.loadSecretKey(
     require('fs').readFileSync(
-      path.join(__dirname, '..', 'var', 'root.secretkey')))
+      path.join(__dirname, '..', 'example',
+                'primary', 'sample.privatekey')))
 });
 
 suite.addBatch({

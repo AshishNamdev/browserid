@@ -1,24 +1,12 @@
 "use strict";
+
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 // make symlinks
 var fs = require('fs');
 var path = require('path');
-var existsSync = fs.existsSync || path.existsSync;
-
-// symlink'ed directories work fine in both *nix and Windows
-function relativeLink(src, dest) {
-  src = path.join(__dirname, src);
-  dest = path.join(__dirname, dest);
-  var destParent = path.dirname(dest);
-  var cwd = process.cwd();
-  process.chdir(destParent);
-
-  if (existsSync(dest)) {
-    fs.unlinkSync(dest);
-  }
-  var relSrc = path.relative(destParent, src);
-  fs.symlinkSync(relSrc, dest, 'junction');
-  process.chdir(cwd);
-}
 
 // Windows requires Administrator cmd prompt to make file links,
 // so just make a copy instead.
@@ -41,3 +29,16 @@ function node(script) {
 }
 
 node('./generate_ephemeral_keys.js');
+
+// To install the automation-tests dependencies, specify AUTOMATION_TESTS=true
+// on the command line when running npm install. See issue  #3160
+if (process.env.AUTOMATION_TESTS) {
+  console.log(">>> Installing automation-tests dependencies");
+  // install automation-test dependencies
+  var npm_process = child_process.spawn('npm', ['install'], {
+    cwd: path.join(__dirname, '..', 'automation-tests'),
+    env: process.env
+  });
+  npm_process.stdout.pipe(process.stdout);
+  npm_process.stderr.pipe(process.stderr);
+}

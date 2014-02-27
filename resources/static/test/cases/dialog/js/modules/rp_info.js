@@ -15,6 +15,8 @@
       RP_TOS_URL = "https://browserid.org/TOS.html",
       RP_PP_URL = "https://browserid.org/priv.html",
       RP_HTTPS_LOGO = "https://en.gravatar.com/userimage/6966791/c4feac761b8544cce13e0406f36230aa.jpg",
+      BODY_SELECTOR = "body",
+      FAVICON_CLASS = "showMobileFavicon",
       mediator = bid.Mediator;
 
   module("dialog/js/modules/rp_info", {
@@ -41,17 +43,22 @@
 
 
   function createController(options) {
-    options = _.extend({ hostname: RP_HOSTNAME }, options);
+    // this is kind of gross, but to avoid updating all the tests, use options
+    // as the input to RpInfo.create, only the relevant fields will be used.
+    options = _.extend({ origin: RP_HOSTNAME }, options);
+    var rpInfo = bid.Models.RpInfo.create(options);
+    options.rpInfo = rpInfo;
 
-    controller = bid.Modules.RPInfo.create();
+    controller = bid.Modules.RPInfo.create(options);
     controller.start(options || {});
   }
 
-  test("neither siteName nor logo specified - show rp_hostname only", function() {
+  test("neither siteName nor logo specified - " +
+          "show rp_name only with the hostname", function() {
     createController();
-    equal($("#rp_hostname").html(), RP_HOSTNAME, "rp_hostname filled in");
-    ok(!$("#rp_name").html(), "rp_name empty");
     ok(!$("#rp_logo").attr("src"), "rp logo not shown");
+    equal($("#rp_name").html(), RP_HOSTNAME, "rp_name filled in");
+    equal($("#rp_hostname").length, 0, "rp_hostname empty");
   });
 
   test("siteName only specified - show specified siteName and rp_hostname", function() {
@@ -59,9 +66,9 @@
       siteName: RP_NAME,
     });
 
-    equal($("#rp_hostname").html(), RP_HOSTNAME, "rp_hostname filled in");
-    equal($("#rp_name").html(), RP_NAME, "rp_name filled in");
     ok(!$("#rp_logo").attr("src"), "rp logo not shown");
+    equal($("#rp_name").html(), RP_NAME, "rp_name filled in");
+    equal($("#rp_hostname").html(), RP_HOSTNAME, "rp_hostname filled in");
   });
 
   test("siteLogos are allowed", function() {
@@ -74,8 +81,6 @@
     });
 
     equal($("#rp_logo").attr("src"), RP_HTTPS_LOGO, "rp logo shown");
-    equal($("#rp_hostname").html(), RP_HOSTNAME, "rp_hostname filled in");
-    ok(!$("#rp_name").html(), "rp_name empty");
   });
 
   test("both siteName and siteLogo specified - show siteName, siteLogo and rp_hostname", function() {
@@ -97,8 +102,60 @@
     });
 
     equal($("#rp_name").text(), RP_NAME, "RP's name is set");
-    equal($("#rp_tos").attr("href"), RP_TOS_URL, "RP's TOS is set");
-    equal($("#rp_pp").attr("href"), RP_PP_URL, "RP's Privacy Policy is set");
+
+    // Make sure both desktop and mobile TOS/PP agreements are written.
+    equal($("#desktopRpInfo .rp_tos").attr("href"), RP_TOS_URL,
+        "RP's Desktop TOS is set");
+    equal($("#mobileRpInfo .rp_tos").attr("href"), RP_TOS_URL,
+        "RP's Mobile TOS is set");
+
+    equal($("#desktopRpInfo .rp_pp").attr("href"), RP_PP_URL,
+        "RP's DesktopPrivacy Policy is set");
+    equal($("#mobileRpInfo .rp_pp").attr("href"), RP_PP_URL,
+        "RP's Mobile Privacy Policy is set");
+
+    // favicon not defined in options, there should be no favicon
+    // class on the body.
+    ok(! $(BODY_SELECTOR).hasClass(FAVICON_CLASS));
+  });
+
+  test("mobileFavicon defined in options, add showMobileFavicon class to body",
+      function() {
+    createController({
+      mobileFavicon: true
+    });
+
+    ok($(BODY_SELECTOR).hasClass(FAVICON_CLASS));
+  });
+
+  test("get light foregroundColor for black background", function() {
+    createController();
+    equal(controller.foregroundColorClass('000000'), 'light');
+  });
+
+  test("get dark foregroundColor for white background", function() {
+    createController();
+    equal(controller.foregroundColorClass('ffffff'), 'dark');
+  });
+
+  test("get light foregroundColor for dark background", function() {
+    createController();
+    equal(controller.foregroundColorClass('000088'), 'light');
+  });
+
+  test("get light foregroundColor for half-light background", function() {
+    createController();
+    equal(controller.foregroundColorClass('ff00b2'), 'light');
+  });
+
+  test("get light foregroundColor for dark text color background", function() {
+    createController();
+    equal(controller.foregroundColorClass('383838'), 'light');
+  });
+
+  test("get dark foregroundColor for light text color background", function() {
+    createController();
+    equal(controller.foregroundColorClass('c7c7c7'), 'dark');
   });
 
 }());

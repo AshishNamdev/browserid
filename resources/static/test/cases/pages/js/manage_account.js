@@ -24,6 +24,8 @@
       testHelpers.setup();
       bid.Renderer.render("#page_head", "site/index", {});
       xhr.setContextInfo("auth_level", "password");
+      xhr.setContextInfo("userid", 1);
+      xhr.setContextInfo("has_password", true);
       mocks.document.location = "";
     },
     teardown: function() {
@@ -37,32 +39,34 @@
     controller.start(options);
   }
 
-  function testPasswordChangeSuccess(oldPass, newPass, msg) {
+  function testPasswordChangeSuccess(oldPass, newPass, msg, xhrResult) {
     testPasswordChange(oldPass, newPass, function(status) {
       equal(status, true, msg);
       // if success is expected, both password fields should be visible.
       equal($("#old_password").val(), "", "old_password field is cleared");
       equal($("#new_password").val(), "", "new_password field is cleared");
       testHelpers.testTooltipNotVisible();
-      network.checkAuth(function(authLevel) {
+      user.checkAuthentication(function(authLevel) {
         equal(authLevel, "password", "after password change, user authenticated to password level");
         start();
       }, testHelpers.unexpectedXHRFailure);
-    }, msg);
+    }, xhrResult);
   }
 
-  function testPasswordChangeFailure(oldPass, newPass, msg) {
+  function testPasswordChangeFailure(oldPass, newPass, msg, xhrResult) {
     testPasswordChange(oldPass, newPass, function(status) {
       equal(status, false, msg);
       testHelpers.testTooltipVisible();
       start();
-    }, msg);
+    }, xhrResult);
   }
 
-  function testPasswordChange(oldPass, newPass, testStrategy, msg) {
+  function testPasswordChange(oldPass, newPass, testStrategy, xhrResult) {
     createController(mocks, function() {
       $("#old_password").val(oldPass);
       $("#new_password").val(newPass);
+
+      if (xhrResult) xhr.useResult(xhrResult);
 
       controller.changePassword(testStrategy);
     });
@@ -197,17 +201,17 @@
     });
   });
 
-  asyncTest("user with only primary emails should not have 'canSetPassword' class", function() {
-    xhr.useResult("primary");
+  asyncTest("user with no password should not have 'canSetPassword' class", function() {
+    xhr.setContextInfo("has_password", false);
 
     createController(mocks, function() {
-      equal($("body").hasClass("canSetPassword"), false, "canSetPassword class not added to body");
+      equal($("body").hasClass("canSetPassword"), false, "canSetPassword added to body");
       start();
     });
   });
 
-  asyncTest("user with >= 1 secondary email should see have 'canSetPassword' class", function() {
-    storage.addEmail("primary_user@primaryuser.com", { type: "secondary" });
+  asyncTest("user with a password should see have 'canSetPassword' class", function() {
+    xhr.setContextInfo("has_password", true);
 
     createController(mocks, function() {
       equal($("body").hasClass("canSetPassword"), true, "canSetPassword class added to body");
@@ -236,7 +240,7 @@
   });
 
   asyncTest("changePassword with too long of a new password - tooltip", function() {
-    testPasswordChangeFailure("oldpassword", generateString(bid.PASSWORD_MAN_LENGTH + 1), "too short new password, expected failure");
+    testPasswordChangeFailure("oldpassword", generateString(bid.PASSWORD_MAX_LENGTH + 1), "too short new password, expected failure");
   });
 
 
@@ -259,21 +263,16 @@
   });
 
   asyncTest("changePassword with user authenticated to password level, incorrect old password - tooltip", function() {
-    xhr.setContextInfo("auth_level", "password");
-    xhr.useResult("incorrectPassword");
-    testPasswordChangeFailure("incorrectpassword", "newpassword", "incorrect old password, expected failure");
+    testPasswordChangeFailure("incorrectpassword", "newpassword", "incorrect old password, expected failure", "incorrectPassword");
   });
 
   asyncTest("changePassword with user authenticated to assertion level, incorrect password - show tooltip", function() {
     xhr.setContextInfo("auth_level", "assertion");
-    xhr.useResult("incorrectPassword");
 
-    testPasswordChangeFailure("oldpassword", "newpassword", "incorrect old password, expected failure");
+    testPasswordChangeFailure("oldpassword", "newpassword", "incorrect old password, expected failure", "incorrectPassword");
   });
 
   asyncTest("changePassword with user authenticated to password level, happy case", function() {
-    xhr.setContextInfo("auth_level", "password");
-
     testPasswordChangeSuccess("oldpassword", "newpassword", "proper completion, no need to authenticate");
   });
 

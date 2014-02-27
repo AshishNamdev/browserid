@@ -9,132 +9,201 @@ BrowserID.Modules.Dialog = (function() {
   var bid = BrowserID,
       user = bid.User,
       errors = bid.Errors,
-      dom = bid.DOM,
-      helpers = bid.Helpers,
-      win = window,
-      startExternalDependencies = true,
-      channel,
+      storage = bid.Storage,
+      redirect = bid.Helpers.redirect,
       sc;
 
   function startActions(onsuccess, onerror) {
-    var actions = BrowserID.Modules.Actions.create();
+    /*jshint validthis: true*/
+    var actions = this.actions = bid.Modules.Actions.create();
     actions.start({
       onsuccess: onsuccess,
       onerror: onerror
     });
-    return actions;
   }
 
-  function startStateMachine(controller) {
+  function startStateMachine() {
+    /*jshint validthis: true*/
     // start this directly because it should always be running.
-    var machine = BrowserID.State.create();
+    var machine = this.stateMachine = bid.State.create();
     machine.start({
-      controller: controller
+      controller: this.actions
+    });
+  }
+
+  function startValidator() {
+    /*jshint validthis: true*/
+    var validator = this.validator = bid.Modules.ValidateRpParams.create();
+    validator.start({
+      window: this.window
     });
   }
 
   function startChannel() {
-    /*jshint validthis:true*/
+    /*jshint validthis: true*/
     var self = this,
+        established,
+        err;
+
+    try {
+      // Native goes before anything. Next, WinChan. If WinChan fails, try the
+      // workaround for environments that do not support popups.
+      established = tryNativeChannel.call(self)
+                 || tryWinChan.call(self)
+                 || tryRpRedirect.call(self);
+    }
+    catch(e) {
+      // generic error message displayed below
+      err = e;
+    }
+
+    if (!established) {
+      var errorInfo = { action: errors.relaySetup };
+      if (err) errorInfo.message = String(err);
+      self.renderError("error", errorInfo);
+    }
+  }
+
+  function tryNativeChannel() {
+    /*jshint validthis: true*/
+    var self = this,
+        win = self.window,
         hash = win.location.hash;
 
     // first, we see if there is a local channel
     if (win.navigator.id && win.navigator.id.channel) {
       win.navigator.id.channel.registerController(self);
-      return;
+      return true;
+    }
+
+    // returning from the primary verification flow, we were native before, we
+    // are native now. This prevents the UI from trying to establish a channel
+    // back to the RP.
+    try {
+      var info = storage.idpVerification.get();
+      /*jshint sub: true */
+      if (info && info['native']) return true;
+    } catch(e) {
+      self.renderError("error", {
+        action: {
+          title: "error in localStorage",
+          message: "could not decode localStorage: " + String(e)
+        }
+      });
+
+      return true;
     }
 
     // next, we see if the caller intends to call native APIs
-    if (hash === "#NATIVE" || hash === "#INTERNAL") {
-      // don't do winchan, let it be.
-      return;
-    }
+    return (hash === "#NATIVE" || hash === "#INTERNAL");
+  }
+
+  function tryWinChan() {
+    /*jshint validthis: true*/
+    var self = this;
 
     try {
-      channel = WinChan.onOpen(function(origin, args, cb) {
+      self.channel = WinChan.onOpen(function(origin, args, cb) {
         // XXX this is called whenever the primary provisioning iframe gets
         // added.  If there are no args, then do not do self.get.
-        if(args) {
+        if (args) {
           self.get(origin, args.params, function(r) {
+            // assertion being passed through WinChan, so we have
+            // fulfilled the `one_time` assertion promise.
+            storage.site.remove(origin, "one_time");
             cb(r);
           }, function (e) {
             cb(null);
           });
         }
       });
-    } catch (e) {
-      self.renderError("error", {
-        action: errors.relaySetup
+    } catch(e) {
+      // don't do anything, we'll try the redirect flow next.
+    }
+
+    return !!self.channel;
+  }
+
+  function tryRpRedirect() {
+    /*jshint validthis: true*/
+    // If there was an error opening the WinChan, we have a potential
+    // workaround. We let WinChan try first always, to prevent the
+    // redirect flow happening in an environment where popups work just fine.
+    var self = this;
+    var rpInfo;
+    try {
+      rpInfo = storage.rpRequest.get();
+    } catch(e) {
+      this.renderError("error", {
+        action: {
+          title: "error in sessionStorage",
+          message: "could not decode sessionStorage: " + String(e)
+        }
       });
+
+      return true;
+    }
+
+    if (rpInfo) {
+      var done = function done() {
+        redirectFlowComplete(self.window, user.rpInfo.getReturnTo());
+      };
+      this.get(rpInfo.origin, rpInfo.params, done, done);
+      return true;
     }
   }
 
-  function stopChannel() {
-    channel && channel.detach();
+  function redirectFlowComplete(win, returnTo) {
+    /**
+     * clear the rpRequest info to prevent users who have visited the dialog
+     * from re-starting the dialog flow by typing the dialog's URL into the
+     * address bar.
+     */
+    storage.rpRequest.clear();
+    redirect(win, returnTo);
   }
 
-  function onWindowUnload() {
-    /*jshint validthis:true*/
-    this.publish("window_unload");
+  function publishKpis(rpAPI) {
+    /*jshint validthis: true*/
+
+    // By default, a dialog is an orphan. It is only not an orphan if an
+    // assertion is generated. When an assertion is generated, orphaned will
+    // be set to false (currently in state.js).
+    var kpis = {
+      orphaned: true,
+      rp_api: rpAPI || "unknown"
+    };
+
+    // only publish the kpi's in aggregate.
+    this.publish("kpi_data", kpis);
   }
 
-  function fixupURL(origin, url) {
-    var u;
-    if (typeof(url) !== "string")
-      throw new Error("urls must be strings: (" + url + ")");
-    /*jshint newcap:false*/
-    if (/^http(s)?:\/\//.test(url)) u = URLParse(url);
-    else if (/^\/[^\/]/.test(url)) u = URLParse(origin + url);
-    else throw new Error("relative urls not allowed: (" + url + ")");
-    // encodeURI limits our return value to [a-z0-9:/?%], excluding <script>
-    var encodedURI = encodeURI(u.validate().normalize().toString());
+  function validateRpParams(originURL, paramsFromRP) {
+    /*jshint validthis: true*/
+    var self=this;
 
-    // All browsers have a max length of URI that they can handle. IE8 has the
-    // shortest total length at 2083 bytes.  IE8 can handle a path length of
-    // 2048 bytes. See http://support.microsoft.com/kb/q208427
+    startValidator.call(self);
 
-    // Check the total encoded URI length
-    if (encodedURI.length > bid.URL_MAX_LENGTH)
-      throw new Error("urls must be < " + bid.URL_MAX_LENGTH + " characters");
+    var params;
+    try {
+      paramsFromRP.originURL = originURL;
+      params = self.validator.validate(paramsFromRP);
+    } catch(e) {
+      // note: renderError accepts HTML and cheerfully injects it into a
+      // frame with a powerful origin. So convert 'e' first.
+      self.renderError("error", {
+        action: {
+          title: "error in " + _.escape(originURL),
+          message: "improper usage of API: " + _.escape(e)
+        }
+      });
 
-    // Check just the path portion.  encode the path to make sure the full
-    // length is checked.
-    if (encodeURI(u.path).length > bid.PATH_MAX_LENGTH)
-      throw new Error("path portion of a url must be < " + bid.PATH_MAX_LENGTH + " characters");
-
-    return encodedURI;
-  }
-
-  function fixupAbsolutePath(origin_url, path) {
-    // Ensure URL is an absolute path (not a relative path or a scheme-relative URL)
-    if (/^\/[^\/]/.test(path))  return fixupURL(origin_url, path);
-
-    throw new Error("must be an absolute path: (" + path + ")");
-  }
-
-  function fixupReturnTo(origin_url, path) {
-    // "/" is a valid returnTo, but it is not a valid path for any other
-    // parameter. If the path is "/", allow it, otherwise pass the path down
-    // the normal checks.
-    var returnTo = path === "/" ?
-      origin_url + path :
-      fixupAbsolutePath(origin_url, path);
-    return returnTo;
-  }
-
-  function validateRPAPI(rpAPI) {
-    var VALID_RP_API_VALUES = [
-      "watch_without_onready",
-      "watch_with_onready",
-      "get",
-      "getVerifiedEmail",
-      "internal"
-    ];
-
-    if (_.indexOf(VALID_RP_API_VALUES, rpAPI) === -1) {
-      throw new Error("invalid value for rp_api: " + rpAPI);
+      throw e;
     }
+
+    return params;
   }
+
 
   var Dialog = bid.Modules.PageModule.extend({
     start: function(options) {
@@ -142,7 +211,7 @@ BrowserID.Modules.Dialog = (function() {
 
       options = options || {};
 
-      win = options.window || window;
+      self.window = options.window || window;
 
       // startExternalDependencies is used in unit testing and can only be set
       // by the creator/starter of this module.  If startExternalDependencies
@@ -150,14 +219,14 @@ BrowserID.Modules.Dialog = (function() {
       // are not started.  These dependencies can interfere with the ability to
       // unit test this module because they can throw exceptions and show error
       // messages.
-      startExternalDependencies = true;
+      self.startExternalDependencies = true;
       if (typeof options.startExternalDependencies === "boolean") {
-        startExternalDependencies = options.startExternalDependencies;
+        self.startExternalDependencies = options.startExternalDependencies;
       }
 
       sc.start.call(self, options);
 
-      if (startExternalDependencies) {
+      if (self.startExternalDependencies) {
         startChannel.call(self);
       }
 
@@ -165,118 +234,73 @@ BrowserID.Modules.Dialog = (function() {
     },
 
     stop: function() {
-      stopChannel();
+      var self=this;
+      if (self.channel)
+        self.channel.detach();
+
+      if (self.actions)
+        self.actions.stop();
+
+      if (self.validator)
+        self.validator.stop();
+
       sc.stop.call(this);
     },
 
-    get: function(origin_url, paramsFromRP, success, error) {
-      var self=this,
-          hash = win.location.hash;
+    get: function(originURL, paramsFromRP, success, error) {
+      var self=this;
 
-      user.setOrigin(origin_url);
-
-
-      if (startExternalDependencies) {
-        var actions = startActions.call(self, success, error);
-        startStateMachine.call(self, actions);
+      if (self.startExternalDependencies) {
+        startActions.call(self, success, error);
+        startStateMachine.call(self);
       }
 
-      // Security Note: paramsFromRP is the output of a JSON.parse on an
-      // RP-controlled string. Most of these fields are expected to be simple
-      // printable strings (hostnames, usernames, and URLs), but we cannot
-      // rely upon the RP to do that. In particular we must guard against
-      // these strings containing <script> tags. We will populate a new
-      // object ("params") with suitably type-checked properties.
-      var params = {};
-      params.hostname = user.getHostname();
-
-      // verify params
+      var params;
       try {
-        var rpAPI = paramsFromRP.rp_api;
-        if (rpAPI) {
-          // throws if an invalid rp_api value
-          validateRPAPI(rpAPI);
-          self.publish("kpi_data", { rp_api: rpAPI });
-        }
-
-        if (paramsFromRP.requiredEmail) {
-          helpers.log("requiredEmail has been deprecated");
-        }
-
-        // support old parameter names if new parameter names not defined.
-        if (paramsFromRP.tosURL && !paramsFromRP.termsOfService)
-          paramsFromRP.termsOfService = paramsFromRP.tosURL;
-
-        if (paramsFromRP.privacyURL && !paramsFromRP.privacyPolicy)
-          paramsFromRP.privacyPolicy = paramsFromRP.privacyURL;
-
-        if (paramsFromRP.termsOfService && paramsFromRP.privacyPolicy) {
-          params.termsOfService = fixupURL(origin_url, paramsFromRP.termsOfService);
-          params.privacyPolicy = fixupURL(origin_url, paramsFromRP.privacyPolicy);
-        }
-
-        if (paramsFromRP.siteLogo) {
-          // Until we have our head around the dangers of data uris and images
-          // that come from other domains, only allow absolute paths from the
-          // origin.
-          params.siteLogo = fixupAbsolutePath(origin_url, paramsFromRP.siteLogo);
-          // To avoid mixed content errors, only allow siteLogos to be served
-          // from https RPs
-          /*jshint newcap:false*/
-          if (URLParse(origin_url).scheme !== "https") {
-            throw new Error("only https sites can specify a siteLogo");
-          }
-        }
-
-        if (paramsFromRP.siteName) {
-          params.siteName = _.escape(paramsFromRP.siteName);
-        }
-
-        // returnTo is used for post verification redirection.  Redirect back
-        // to the path specified by the RP.
-        if (paramsFromRP.returnTo) {
-          var returnTo = fixupReturnTo(origin_url, paramsFromRP.returnTo);
-          user.setReturnTo(returnTo);
-        }
-
-        if (hash.indexOf("#AUTH_RETURN") === 0) {
-          var primaryParams = JSON.parse(win.sessionStorage.primaryVerificationFlow);
-          params.email = primaryParams.email;
-          params.add = primaryParams.add;
-          params.type = "primary";
-
-          // FIXME: if it's AUTH_RETURN_CANCEL, we should short-circuit
-          // the attempt at provisioning. For now, we let provisioning
-          // be tried and fail.
-        }
-
-        // no matter what, we clear the primary flow state for this window
-        win.sessionStorage.primaryVerificationFlow = undefined;
+        params = validateRpParams.call(self, originURL, paramsFromRP);
       } catch(e) {
-        // note: renderError accepts HTML and cheerfully injects it into a
-        // frame with a powerful origin. So convert 'e' first.
-        self.renderError("error", {
-          action: {
-            title: "error in " + _.escape(origin_url),
-            message: "improper usage of API: " + _.escape(e)
-          }
-        });
-
+        // input parameter validation failure. Stop.
         return e;
       }
-      // after this point, "params" can be relied upon to contain safe data
 
-      // XXX Perhaps put this into the state machine.
-      self.bind(win, "unload", onWindowUnload);
+      // after this point, "params" and "paramsFromRP" can be relied upon
+      // to contain safe data
+      params.origin = originURL;
 
-      self.publish("start", params);
+      if (params.startTime)
+        self.publish("start_time", params.startTime);
+
+      publishKpis.call(self, params.rpAPI);
+
+      var rpInfo = bid.Models.RpInfo.create(params);
+      user.setRpInfo(rpInfo);
+      params.rpInfo = rpInfo;
+
+      self.publish("channel_established");
+
+      // no matter what, we clear the primary flow state for this window
+      storage.idpVerification.clear();
+
+      function start() {
+        self.publish("start", params);
+      }
+
+      if (params.type === "primary" && !params.add) {
+        // at this point, we will only have type of primary if we're
+        // returning from #AUTH_RETURN. Mark that email as having been
+        // used as a primary, in case it used to be a secondary.
+        // If being added, the user doesn't own this email yet, and the
+        // status will be changed in add_email_with_assertion.
+        //
+        // NOTE: calling start for a request failure is the desired behavior.
+        // If this call fails, it is no big deal, the user should not be
+        // blocked. See
+        // https://github.com/mozilla/browserid/issues/2840#issuecomment-11215155
+        user.usedAddressAsPrimary(params.email, start, start);
+      } else {
+        start();
+      }
     }
-
-    // BEGIN TESTING API
-    ,
-    onWindowUnload: onWindowUnload
-    // END TESTING API
-
   });
 
   sc = Dialog.sc;

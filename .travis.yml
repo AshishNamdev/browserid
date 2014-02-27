@@ -5,11 +5,16 @@ before_script:
 language: node_js
 
 before_install:
+ - "uname -a"
+ - "[ -e /etc/lsb-release ] && cat /etc/lsb-release"
+ - "phantomjs --version"
+ - "mysql -NBe 'select version()'"
  - sudo apt-get install libgmp3-dev
  - "mysql -e 'create database browserid;'"
 
 node_js:
- - 0.8
+ - "0.8"
+ - "0.10"
 
 notifications:
   irc:
@@ -18,13 +23,12 @@ notifications:
     use_notice: false
     skip_join: false
   email:
-    - lloyd@mozilla.com
     - jrgm@mozilla.com
 
 env:
- - WHAT_TESTS=front MYSQL_USER=root
- - WHAT_TESTS=back_mysql MYSQL_USER=root
- - WHAT_TESTS=back
+ - WHAT_TESTS=front MYSQL_USER=root DISABLE_REQUEST_THROTTLING=true
+ - WHAT_TESTS=back_mysql MYSQL_USER=root DISABLE_REQUEST_THROTTLING=true
+ - WHAT_TESTS=back DISABLE_REQUEST_THROTTLING=true
 
 mysql:
   adapter: mysql2

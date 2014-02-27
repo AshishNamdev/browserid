@@ -49,7 +49,9 @@
     controller.start(options);
   }
 
-  function expectTooltipVisible() {
+  function testInvalidPassword(password) {
+    $("#password").val(password);
+
     xhr.useResult("mustAuth");
     createController(config, function() {
       controller.submit(function() {
@@ -64,6 +66,7 @@
   }
 
   function testCannotConfirm() {
+    ok($("body").is(":visible"));
     testHelpers.testErrorVisible();
   }
 
@@ -83,11 +86,10 @@
     storage.setReturnTo(returnTo);
 
     createController(config, function() {
-      testVisible("#congrats");
       testHasClass("body", "complete");
       testElementTextEquals(".website", returnTo, "origin is set to redirect to login.persona.org");
       testDocumentRedirected(doc, returnTo, "redirection occurred to correct URL");
-      equal(storage.getLoggedIn("https://test.domain"), "testuser@testuser.com", "logged in status set");
+      equal(storage.site.get("https://test.domain", "logged_in"), "testuser@testuser.com", "logged in status set");
       start();
     });
   });
@@ -107,8 +109,10 @@
   asyncTest("invalid token - show cannot confirm error", function() {
     xhr.useResult("invalid");
 
+    $("body").hide();
     createController(config, function() {
       testCannotConfirm();
+      $("body").show();
       start();
     });
   });
@@ -121,13 +125,23 @@
     });
   });
 
-  asyncTest("password: missing password", function() {
-    $("#password").val();
+  testHelpers.testInvalidAuthenticationPassword(testInvalidPassword);
 
-    expectTooltipVisible();
+  asyncTest("incorrect password does not authenticate", function() {
+    $("#password").val("password");
+
+    xhr.useResult("mustAuth");
+    createController(config, function() {
+      xhr.useResult("badPassword");
+      controller.submit(function(status) {
+        equal(status, false, "correct status");
+        testHelpers.testTooltipVisible();
+        start();
+      });
+    });
   });
 
-  asyncTest("password: good password", function() {
+  asyncTest("submit good password and token authenticates", function() {
     $("#password").val("password");
 
     xhr.useResult("mustAuth");
@@ -142,21 +156,7 @@
     });
   });
 
-  asyncTest("password: bad password", function() {
-    $("#password").val("password");
-
-    xhr.useResult("mustAuth");
-    createController(config, function() {
-      xhr.useResult("badPassword");
-      controller.submit(function(status) {
-        equal(status, false, "correct status");
-        testHelpers.testTooltipVisible();
-        start();
-      });
-    });
-  });
-
-  asyncTest("password: good password bad token", function() {
+  asyncTest("good password & bad token shows an error message", function() {
     $("#password").val("password");
 
     xhr.useResult("invalid");
@@ -166,30 +166,12 @@
     });
   });
 
-  asyncTest("redirect: message shows with correct timeout", function() {
+  asyncTest("redirect: location correctly updated", function() {
     var returnTo = 'http://test.domain/path';
     storage.setReturnTo(returnTo);
-    var timeout = 2;
 
-    //mock out helper so we can check progress of redirectTimeout el
-    var replaceFormWithNotice = pageHelpers.replaceFormWithNotice;
-    pageHelpers.replaceFormWithNotice = function(selector, cb) {
-      // mock out 2s network response
-      setTimeout(function mockedNetwork() {
-        replaceFormWithNotice.call(this, selector, function intercepted() {
-          equal(parseInt($('#redirectTimeout').html(), 10), timeout,
-            'timeout should not have started countdown yet');
-
-          //at the end, finish with cb
-          cb && cb();
-        });
-      }, (timeout - 1) * 1000);
-    };
-
-    var options = _.extend({ redirectTimeout: timeout * 1000 }, config);
-    createController(options, function() {
-      // teardown
-      pageHelpers.replaceFormWithNotice = replaceFormWithNotice;
+    createController(config, function() {
+      equal(doc.location, returnTo);
       start();
     });
   });

@@ -6,44 +6,85 @@
 
   var bid = BrowserID,
       tooltip = bid.Tooltip,
-      testHelpers = bid.TestHelpers;
+      testHelpers = bid.TestHelpers,
+      testUndefined = testHelpers.testUndefined,
+      testVisible = testHelpers.testVisible,
+      testNotVisible = testHelpers.testNotVisible,
+      testTooltipVisible = testHelpers.testTooltipVisible,
+      testTooltipNotVisible = testHelpers.testTooltipNotVisible;
 
   module("common/js/tooltip", {
-    setup: function() {
-      testHelpers.setup();
-    },
-    teardown: function() {
-      testHelpers.teardown();
+    setup: testHelpers.setup,
+    teardown: testHelpers.teardown
+  });
+
+
+  asyncTest("showTooltip, reset - " +
+                  "show tooltip, give associated input box the invalid class",
+                  function() {
+    tooltip.showTooltip("#shortTooltip", function() {
+      testTooltipVisible();
+      equal($('#needsTooltip').hasClass("invalid"), true);
+      testVisible("#shortTooltip");
+
+      tooltip.reset(function() {
+        testNotVisible("#shortTooltip");
+        equal($('#needsTooltip').hasClass("invalid"), false);
+        testTooltipNotVisible();
+
+        start();
+      });
+    });
+  });
+
+  asyncTest("tooltip hidden whenever user changes input box", function() {
+    tooltip.showTooltip("#shortTooltip", function() {
+      // synthesize an "enter" key press - no change to input box, tooltip
+      // still displayed.
+      $("#needsTooltip").trigger("keyup");
+
+      setTimeout(function() {
+        equal($('#needsTooltip').hasClass("invalid"), true);
+        testVisible("#shortTooltip");
+
+        // synthesize user adds a letter - hides the tooltip
+        $("#needsTooltip").val("a");
+        $("#needsTooltip").trigger("keyup");
+
+        setTimeout(function() {
+          testNotVisible("#shortTooltip");
+          equal($('#needsTooltip').hasClass("invalid"), false);
+          testTooltipNotVisible();
+
+          start();
+        }, 10);
+      }, 10);
+    });
+  });
+
+  asyncTest("only one tooltip shown at a time", function() {
+    tooltip.showTooltip("#shortTooltip", function() {
+      tooltip.showTooltip("#secondTooltip", function() {
+        testNotVisible("#shortTooltip");
+        testVisible("#secondTooltip");
+        equal($('#needsTooltip').hasClass("invalid"), true);
+
+        testTooltipVisible();
+
+        start();
+      });
+    });
+  });
+
+  test("no exception thrown if tooltip element does not exist", function() {
+    var err;
+
+    try {
+      tooltip.showTooltip("#non_existent");
+    } catch(e) {
+      err = e;
     }
+
+    testUndefined(err);
   });
-
-
-  test("show short tooltip - shows for about 2.5 seconds", function() {
-    var displayTime = tooltip.showTooltip("#shortTooltip");
-    ok(2000 <= displayTime && displayTime <= 3000, displayTime + " - minimum of 2 seconds, max of 3 seconds");
-    equal(tooltip.shown, true, "tooltip says that it is shown");
-  });
-
-  test("show long tooltip - shows for about 5 seconds", function() {
-    var displayTime = tooltip.showTooltip("#longTooltip");
-    ok(displayTime >= 4500, displayTime + " - longer tooltip is on the screen for a bit longer");
-  });
-
-  asyncTest("show tooltip, then reset - hides tooltip, resets shown status", function() {
-    tooltip.showTooltip("#shortTooltip");
-    setTimeout(function() {
-      tooltip.reset();
-
-      equal($(".tooltip:visible").length, 0, "after reset, all tooltips are hidden");
-      equal(tooltip.shown, false, "after reset, tooltip status is reset");
-      start();
-    }, 100);
-  });
-
-  test("only one tooltip shown at a time", function() {
-    tooltip.showTooltip("#shortTooltip");
-    tooltip.showTooltip("#shortTooltip");
-    equal($(".tooltip:visible").length, 1, "only one tooltip shown at a time");
-  });
-
 }());

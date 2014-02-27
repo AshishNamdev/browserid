@@ -6,7 +6,8 @@
     "host": "127.0.0.1"
   },
   "use_minified_resources": true,
-	"public_static_url": "https://static.login.persona.org",
+  "public_static_url": "https://static.login.persona.org",
+  "firefoxos_url": "https://firefoxos.persona.org",
   "database": {
     "driver": "mysql",
     "user": "browserid",
@@ -16,9 +17,10 @@
   "statsd": {
     "enabled": true
   },
-  "kpi_backend_sample_rate": 0.0,
+  "kpi": {
+    "backend_sample_rate": 0.0
+  },
   "bcrypt_work_factor": 12,
-  "max_compute_processes": null,
   "max_compute_duration": 10,
   "disable_primary_support": false,
   "enable_code_version": false,
@@ -55,11 +57,22 @@
   "router": { "bind_to": { "port": 63300 } },
 
   // set to true to enable the development menu.
-  "enable_development_menu": false
+  "enable_development_menu": false,
 
   // http_proxy should be overridded per env
   //"http_proxy": {
   //  "host": "127.0.0.1",
   //  "port": 10006
   //},
+
+  // set to true to use an inline script in the dialog HEAD to measure the 
+  // time it takes the window to open and the DOM to start loading.
+  // Enabling this will break CSP because of the extra inline script in the 
+  // HEAD.
+  "measure_dom_loading": false,
+
+  "forcible_issuers": [
+    "firefoxos.persona.org",
+    "login.persona.org"
+  ]
 }

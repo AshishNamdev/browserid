@@ -8,7 +8,6 @@ BrowserID.manageAccount = (function() {
 
   var bid = BrowserID,
       user = bid.User,
-      network = bid.Network,
       errors = bid.Errors,
       dom = bid.DOM,
       storage = bid.Storage,
@@ -52,7 +51,7 @@ BrowserID.manageAccount = (function() {
         displayStoredEmails.call(self, oncomplete);
       }
       else if (_.size(emails) > 1) {
-        if (confirmAction(format(gettext("Remove %(email) from your Persona account?"),
+        if (confirmAction(format(gettext("Remove %(email)s from your Persona account?"),
                                  { email: email }))) {
           user.removeEmail(email, function() {
             displayStoredEmails.call(self, oncomplete);
@@ -92,7 +91,7 @@ BrowserID.manageAccount = (function() {
 
     var template = dom.getInner("#templateUser");
 
-    _(emails).each(function(item) {
+    _.each(emails, function(item) {
       var e = _.escape(item.address);
       var identity = substitute(template, { email: e });
 
@@ -104,7 +103,7 @@ BrowserID.manageAccount = (function() {
   }
 
   function cancelAccount(oncomplete) {
-    if (confirmAction(gettext("Are you sure you want to cancel your Persona account?"))) {
+    if (confirmAction(gettext("Are you sure you want to delete your Persona account?"))) {
       user.cancelUser(function() {
         doc.location="/";
         complete(oncomplete);
@@ -129,6 +128,9 @@ BrowserID.manageAccount = (function() {
     function changePassword() {
       user.changePassword(oldPassword, newPassword, function(status) {
         if(status) {
+          // a successful password change always puts the session in a
+          // 'password' level authentication
+          authLevel = "password";
           dom.removeClass("#edit_password", "edit");
           dom.setInner("#old_password", "");
           dom.setInner("#new_password", "");
@@ -164,21 +166,6 @@ BrowserID.manageAccount = (function() {
       tooltip.showTooltip("#tooltipPasswordLength");
       complete(oncomplete, false);
     }
-    else if(authLevel !== "password") {
-      var email = getSecondary();
-      // go striaght to the network level instead of user level so that if
-      // the user gets the password wrong, we don't clear their info.
-      network.authenticate(email, oldPassword, function(status) {
-        if(status) {
-          authLevel = "password";
-          changePassword();
-        }
-        else {
-          tooltip.showTooltip("#tooltipInvalidPassword");
-          complete(oncomplete, false);
-        }
-      }, pageHelpers.getFailure(errors.authenticate, oncomplete));
-    }
     else {
       changePassword();
     }
@@ -193,19 +180,10 @@ BrowserID.manageAccount = (function() {
   }
 
   function displayChangePassword(oncomplete) {
-    var canSetPassword = !!getSecondary();
-    dom[canSetPassword ? "addClass" : "removeClass"]("body", "canSetPassword");
-    complete(oncomplete);
-  }
-
-  function getSecondary() {
-    var emails = storage.getEmails();
-
-    for(var key in emails) {
-      if(emails[key].type === "secondary") {
-        return key;
-      }
-    }
+    user.withContext(function(ctx) {
+      dom[ctx.has_password ? "addClass" : "removeClass"]("body", "canSetPassword");
+      complete(oncomplete);
+    });
   }
 
   var Module = bid.Modules.PageModule.extend({

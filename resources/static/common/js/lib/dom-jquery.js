@@ -20,6 +20,8 @@ BrowserID.DOM = ( function() {
             return jQuery( selector );
         },
 
+
+
         /**
         * Get a set of descendent elements that match the selector
         * @method getDescendentElements
@@ -78,6 +80,16 @@ BrowserID.DOM = ( function() {
         */
         closest: function( selector, searchFrom ) {
           return jQuery( searchFrom ).closest( selector );
+        },
+
+        /**
+        * Check whether an element exists in the DOM
+        * @method exists
+        * @param {selector || element} selector - element to find
+        * @return {boolean} true if element exists, false otw.
+        */
+        exists: function( selector ) {
+          return !!jQuery( selector ).closest( 'html' ).length;
         },
 
         /**
@@ -142,12 +154,19 @@ BrowserID.DOM = ( function() {
         */
         setInner: function( element, value ) {
             var target = jQuery( element );
-            if( isValBased( target ) ) {
-                target.val( value );
-            }
-            else {
-                target.html( value );
-            }
+
+            // If using a class selector, multiple elements can be returned.
+            // One element could be an input, another a normal DOM element.
+            // Loop over each element and inspect one at a time.
+            target.each(function(idx, element) {
+                element = $( element );
+                if( isValBased( element ) ) {
+                    element.val( value );
+                }
+                else {
+                    element.html( value );
+                }
+            });
         },
 
         /**
@@ -199,8 +218,7 @@ BrowserID.DOM = ( function() {
         * @return {boolean} true if the element has the attribute, false otw.
         */
         hasAttr: function( element, attrName ) {
-            var val = jQuery( element )[ 0 ].getAttribute( attrName );
-            return val !== null;
+            return typeof jQuery( element ).attr( attrName ) !== "undefined";
         },
 
         /**
@@ -316,7 +334,22 @@ BrowserID.DOM = ( function() {
          * @param {selelector || element} elementToFocus
          */
         focus: function( elementToFocus ) {
-          jQuery( elementToFocus ).focus();
+          var el = jQuery( elementToFocus );
+
+          // IE8 blows up when trying to focus an invisible or disabled
+          // element. Keep that from happening. See issue #3385
+          if ( el.is( ':visible' ) && el.is( ':enabled' ) ) {
+            // IE8 is difficult. Sometimes a new element cannot be
+            // programatically focused if the old element is not first blurred.
+            // IE8 is doubly difficult because the default element that is
+            // focused is the body. If you blur the body, it puts a dialog
+            // behind its parent window.
+            if (! jQuery( ':focus' ).is("body")) {
+              jQuery( ':focus' ).blur();
+            }
+
+            el.focus();
+          }
         },
 
         /**
@@ -326,7 +359,7 @@ BrowserID.DOM = ( function() {
          * @method is
          * @param {selector || element} elementToCheck
          * @param {string} type
-         * @returns {boolean} true if elementToCheck matches the specified
+         * @return {boolean} true if elementToCheck matches the specified
          * type, false otw.
          */
         is: function( elementToCheck, type ) {
@@ -337,18 +370,28 @@ BrowserID.DOM = ( function() {
          * Show an element
          * @method show
          * @param {selector || element} elementToShow
+         * @param {function} [done] called when complete
          */
-        show: function( elementToShow ) {
-          return jQuery( elementToShow ).show();
+        show: function( elementToShow, done ) {
+          var el = jQuery( elementToShow ).show();
+
+          if (done) done();
+
+          return el;
         },
 
         /**
          * Hide an element
          * @method hide
          * @param {selector || element} elementToHide
+         * @param {function} [done] called when complete
          */
-        hide: function( elementToHide ) {
-          return jQuery( elementToHide ).hide();
+        hide: function( elementToHide, done ) {
+          var el = jQuery( elementToHide ).hide();
+
+          if (done) done();
+
+          return el;
         },
 
         /**
@@ -356,9 +399,21 @@ BrowserID.DOM = ( function() {
          * @method slideDown
          * @param {selector || element} elementToSlide
          * @param {number} [animationTime]
+         * @param {function} [done] called when animation completes
          */
-        slideDown: function( elementToSlide, animationTime ) {
-          return jQuery( elementToSlide ).slideDown( animationTime );
+        slideDown: function( elementToSlide, animationTime, done ) {
+          if (animationTime) {
+            var el = jQuery( elementToSlide ).slideDown( animationTime );
+            // If elementToSlide does not exist in the DOM, jQuery never calls
+            // the done function. Avoid the blowup by using a setTimeout.
+            if ( done ) {
+              setTimeout( done, animationTime );
+            }
+            return el;
+          }
+          else {
+            return DOM.show( elementToSlide, done );
+          }
         },
 
         /**
@@ -366,9 +421,23 @@ BrowserID.DOM = ( function() {
          * @method slideUp
          * @param {selector || element} elementToSlide
          * @param {number} [animationTime]
+         * @param {function} [done] called when animation completes
          */
-        slideUp: function( elementToSlide, animationTime ) {
-          return jQuery( elementToSlide ).slideUp( animationTime );
+        slideUp: function( elementToSlide, animationTime, done ) {
+          if (animationTime) {
+            var el = jQuery( elementToSlide ).slideUp( animationTime );
+
+            // If elementToSlide does not exist in the DOM, jQuery never calls
+            // the done function. Avoid the blowup by using a setTimeout.
+            if ( done ) {
+              setTimeout( done, animationTime );
+            }
+
+            return el;
+          }
+          else {
+            return DOM.hide( elementToSlide, done );
+          }
         },
 
         /**
@@ -376,9 +445,23 @@ BrowserID.DOM = ( function() {
          * @method fadeIn
          * @param {selector || element} elementToFade
          * @param {number} [animationTime]
+         * @param {function} [done] called when animation completes
          */
-        fadeIn: function( elementToFade, animationTime ) {
-          return jQuery( elementToFade ).fadeIn( animationTime );
+        fadeIn: function( elementToFade, animationTime, done ) {
+          if ( animationTime ) {
+            var el = jQuery( elementToFade ).fadeIn( animationTime );
+
+            // If elementToFade does not exist in the DOM, jQuery never calls
+            // the done function. Avoid the blowup by using a setTimeout.
+            if ( done ) {
+              setTimeout( done, animationTime );
+            }
+
+            return el;
+          }
+          else {
+            return DOM.show( elementToFade, done );
+          }
         },
 
         /**
@@ -386,9 +469,53 @@ BrowserID.DOM = ( function() {
          * @method fadeOut
          * @param {selector || element} elementToFade
          * @param {number} [animationTime]
+         * @param {function} [done] called when animation completes
          */
-        fadeOut: function( elementToFade, animationTime ) {
-          return jQuery( elementToFade ).fadeOut( animationTime );
+        fadeOut: function( elementToFade, animationTime, done ) {
+          if ( animationTime ) {
+            var el = jQuery( elementToFade ).fadeOut( animationTime );
+
+            // If elementToFade does not exist in the DOM, jQuery never calls
+            // the done function. Avoid the blowup by using a setTimeout.
+            if ( done ) {
+              setTimeout( done, animationTime );
+            }
+
+            return el;
+          }
+          else {
+            return DOM.hide( elementToFade, done );
+          }
+        },
+
+        /**
+         * Stop any animations that are occurring on an element.
+         * @method stopAnimations
+         * @param {selector || element} elementToStop
+         */
+        stopAnimations: function( elementToStop ) {
+          return jQuery( elementToStop ).stop();
+        },
+
+        /**
+         * Get the inner width of an element
+         * @method getInnerWidth
+         * @param {selector || element} element
+         * @return {number} inner width of element
+         */
+        getInnerWidth: function( element ) {
+          return jQuery( element ).innerWidth();
+        },
+
+        /**
+         * Set a style on an element
+         * @method setStyle
+         * @param {selector || element} element
+         * @param {string} styleName
+         * @param {number || string} value
+         */
+        setStyle: function( element, propertyName, value ) {
+          return jQuery( element ).css( propertyName, value );
         }
     };
 

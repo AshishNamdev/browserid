@@ -11,12 +11,26 @@ require('assert'),
 vows = require('vows'),
 start_stop = require('./lib/start-stop.js'),
 wsapi = require('./lib/wsapi.js'),
-db = require('../lib/db.js'),
 config = require('../lib/configuration.js'),
 jwcrypto = require('jwcrypto'),
 http = require('http'),
 querystring = require('querystring'),
-path = require('path');
+path = require('path'),
+url = require('url'),
+compareAudiences = require('../lib/verifier/certassertion').compareAudiences;
+
+const TEST_DOMAIN_PATH =
+  path.join(__dirname, '..', 'example', 'primary', '.well-known', 'browserid');
+
+process.env['PROXY_IDPS'] = JSON.stringify({
+  "yahoo.com": "example.domain",
+  "real.primary": "example.com", // this should be ignored, because real.primary is a shimmed real primary, below
+  "broken.primary": "example.com" // this should fallback to secondary, because example.com is not a real primary
+});
+
+process.env['SHIMMED_PRIMARIES'] =
+  'example.domain|http://127.0.0.1:10005|' + TEST_DOMAIN_PATH +
+  ',real.primary|http://127.0.0.1:10005|' + TEST_DOMAIN_PATH;
 
 var suite = vows.describe('verifier');
 
@@ -34,6 +48,38 @@ const TEST_EMAIL = 'someuser@somedomain.com',
       TEST_ORIGIN = 'http://fakesite.com:8080';
 
 var token = undefined;
+
+function matchesAudience(expected) {
+  var context = {
+    topic: function() {
+      var origins = this.context.name.split(' and ');
+      this.callback(!!compareAudiences(origins[0], origins[1]));
+    }
+  };
+
+  context['should' + (expected ? '' : ' not') + ' match'] = function(err) {
+    assert(err !== expected);
+  };
+
+  return context;
+}
+
+suite.addBatch({
+  'audiences': {
+    'http://fakesite.com and http://fakesite.com:80': matchesAudience(true),
+    'https://fakesite.com and https://fakesite.com:443': matchesAudience(true),
+    'http://fakesite.com:8000 and http://fakesite.com:8000': matchesAudience(true),
+    'https://fakesite.com:9000 and https://fakesite.com:9000': matchesAudience(true),
+
+    'http://fakesite.com:8100 and http://fakesite.com:80': matchesAudience(false),
+    'https://fakesite.com:9100 and https://fakesite.com:443': matchesAudience(false),
+    'http://fakesite.com:80 and http://fakesite.com:8000': matchesAudience(false),
+    'https://fakesite.com:443 and https://fakesite.com:9000': matchesAudience(false),
+
+    'app://browser.gaiamobile.org and app://browser.gaiamobile.org:80': matchesAudience(true)
+  }
+});
+
 
 // let's create a user and certify a key so we can
 // generate assertions
@@ -55,7 +101,8 @@ suite.addBatch({
     topic: function() {
       start_stop.waitForToken(this.callback);
     },
-    "is obtained": function (t) {
+    "is obtained": function (err, t) {
+      assert.isNull(err);
       assert.isString(t);
       token = t;
     }
@@ -237,6 +284,32 @@ function make_basic_tests(new_style) {
         var resp = JSON.parse(r.body);
         assert.strictEqual(resp.status, 'failure');
         assert.strictEqual(resp.reason, 'audience mismatch: port mismatch');
+      }
+    },
+    "and trying to be clever with wildcard matching in the audience": {
+      topic: function(err, assertion)  {
+        wsapi.post('/verify', {
+          audience: "http://*.net:8080",
+          assertion: assertion
+        }).call(this);
+      },
+      "fails with a helpful error message": function(err, r) {
+        var resp = JSON.parse(r.body);
+        assert.strictEqual(resp.status, 'failure');
+        assert.strictEqual(resp.reason, 'audience mismatch: domain missing');
+      }
+    },
+    "and submitting an audience with an empty domain": {
+      topic: function(err, assertion)  {
+        wsapi.post('/verify', {
+          audience: ":8080",
+          assertion: assertion
+        }).call(this);
+      },
+      "will not result in accidental foot-shooting": function(err, r) {
+        var resp = JSON.parse(r.body);
+        assert.strictEqual(resp.status, 'failure');
+        assert.strictEqual(resp.reason, 'audience mismatch: domain missing');
       }
     },
     "leaving off the audience": {
@@ -833,7 +906,8 @@ function make_other_issuer_tests(new_style) {
       "to return a clear error message": function (err, r) {
         var resp = JSON.parse(r.body);
         assert.strictEqual(resp.status, 'failure');
-        assert.strictEqual(resp.reason, "can't get public key for no.such.domain");
+        assert.strictEqual(resp.reason, "can't get public key for no.such.domain: " +
+                           "no.such.domain is not a browserid primary - non-200 response code to /.well-known/browserid");
       }
     }
   };
@@ -965,6 +1039,69 @@ suite.addBatch({
     }
   }
 });
+
+
+// PROXY IDPS
+suite.addBatch({
+  "certify the user key by proxy_idps for email address with uppercase domain": {
+    topic: function() {
+      var secretKey = jwcrypto.loadSecretKey(
+        require('fs').readFileSync(
+          path.join(__dirname, '..', 'example', 'primary', 'sample.privatekey')));
+
+      var expiration = new Date(new Date().getTime() + (1000 * 60 * 60 * 6));
+      jwcrypto.cert.sign({publicKey: newClientKeypair.publicKey, principal: {email: "foo@YAHOO.COM"}},
+                         {issuedAt: new Date(), issuer: "example.domain",
+                          expiresAt: expiration},
+                         {}, secretKey, this.callback);
+    },
+    "works": function(err, cert) {
+      assert.isNull(err);
+      assert.isString(cert);
+      primaryCert = cert;
+    }
+  }
+});
+
+// now verify that assertions from a primary who does have browserid support
+// and may speak for an email address will succeed
+suite.addBatch({
+  "generating an assertion from a cert signed by proxy idp and uppercase domain": {
+    topic: function() {
+      // primaryCert generated
+      // newClientKeypair generated
+      var expirationDate = new Date(new Date().getTime() + (2 * 60 * 1000));
+      var self = this;
+      jwcrypto.assertion.sign({}, {audience: TEST_ORIGIN, expiresAt: expirationDate},
+                             newClientKeypair.secretKey, function(err, assertion) {
+                               if (err) return self.callback(err);
+                               var b = jwcrypto.cert.bundle([primaryCert],
+                                                            assertion);
+                               self.callback(null, b);
+                             });
+    },
+    "yields a good looking assertion": function (err, r) {
+      assert.isString(r);
+      assert.equal(r.length > 0, true);
+    },
+    "will cause the verifier": {
+      topic: function(err, assertion) {
+        wsapi.post('/verify', {
+          audience: TEST_ORIGIN,
+          assertion: assertion
+        }).call(this);
+      },
+      "to succeed": function (err, r) {
+        var resp = JSON.parse(r.body);
+        assert.strictEqual(resp.status, 'okay');
+        assert.strictEqual(resp.issuer, "example.domain");
+        assert.strictEqual(resp.audience, TEST_ORIGIN);
+        assert.strictEqual(resp.email, "foo@YAHOO.COM");
+      }
+    }
+  }
+});
+
 
 const OTHER_EMAIL = 'otheremail@example.com';
 

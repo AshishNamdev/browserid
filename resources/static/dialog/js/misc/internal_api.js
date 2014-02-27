@@ -9,8 +9,32 @@
       bid = BrowserID,
       internal = bid.internal = bid.internal || {},
       user = bid.User,
+      network = bid.Network,
       storage = bid.Storage,
-      moduleManager = bid.module;
+      log = bid.Helpers.log,
+      moduleManager = bid.module,
+      interactionData = bid.Models.InteractionData;
+
+  network.init();
+  network.clearContext();
+
+  function parseOptions(options) {
+    if (typeof options === 'string') {
+      // Firefox forbids sending objects across the blood-brain barrier from
+      // gecko into userland JS.  So we just stringify and destringify our
+      // objects when calling from b2g native code.
+      try {
+        options = JSON.parse(options);
+      } catch(e) {
+        log("invalid options string: " + options);
+        // rethrow the error
+        throw e;
+      }
+    }
+
+    return options;
+  }
+
 
   // given an object containing an assertion, extract the assertion string,
   // as the internal API is supposed to return a string assertion, not an
@@ -35,7 +59,7 @@
       callback && callback(status);
     }
 
-    user.checkAuthentication(function onComplete(authenticated) {
+    user.checkAuthentication(function(authenticated) {
       if (authenticated) {
         storage.site.set(origin, "remember", true);
       }
@@ -47,21 +71,34 @@
   /**
    * Get an assertion.  Mimics the behavior of navigator.id.get.
    * options.silent defaults to false.  To get an assertion without using the
-   * dialog, set options.silent to true.  To specify a required email, set
-   * options.requiredEmail. By specifying both silent:true and requiredEmail:
-   * <email>, an assertion will be attempted to be retreived for the given
-   * email without showing the dialog.
+   * dialog, set options.silent to true.
    * @method get
    * @param {string} origin
    * @param {function} callback - called when complete.  Called with assertion
    * if success, null if the user cancels.  Other conditions causing null
-   * return value: silent is true and user is not authenticated.  silent is
-   * true, requiredEmail is specified but user does not control email.
+   * return value: silent is true and user is not authenticated.
    * @param {object} options.  See options block for navigator.id.get.
    * options.silent defaults to false.
    */
-  internal.get = function(origin, callback, options) {
+  internal.get = function(origin, callback, options, externalLog) {
+    log = externalLog || bid.Helpers.log;
+
+    try {
+      options = parseOptions(options);
+    } catch(e) {
+      return;
+    }
+
     function complete(assertion) {
+      // The dialog has closed, so that we get results from users who
+      // only open the dialog a single time, send the KPIs immediately.
+      // Note, this does not take care of shimmed contexts. Shimmed contexts
+      // are taken care of in in communication_iframe/start.js. Errors
+      // sending the KPI data should not affect anything else.
+      try {
+        interactionData.publishCurrent();
+      } catch(e) {}
+
       assertion = assertionObjectToString(assertion);
       // If no assertion, give no reason why there was a failure.
       callback && callback(assertion || null);
@@ -74,12 +111,11 @@
 
     var silent = !!options.silent;
     if(silent) {
-      // first, check the required email field, if that is not specified, go
       // check if an email is associated with this site. If that is not
       // available, there is not enough information to continue.
-      var requiredEmail = options.requiredEmail || storage.site.get(origin, "email");
-      if(requiredEmail) {
-        getSilent(origin, requiredEmail, callback);
+      var associatedEmail = storage.site.get(origin, "email");
+      if (associatedEmail) {
+        getSilent(origin, associatedEmail, complete);
       }
       else {
         complete();
@@ -121,11 +157,12 @@
       callback && callback(assertion || null);
     }
 
+    setOrigin(origin);
+
     user.checkAuthenticationAndSync(function(authenticated) {
       // User must be authenticated to get an assertion.
       if(authenticated) {
-        user.setOrigin(origin);
-        user.getAssertion(email, user.getOrigin(), function(assertion) {
+        user.getAssertion(email, origin, function(assertion) {
           complete(assertion || null);
         }, complete.curry(null));
       }
@@ -135,6 +172,22 @@
     }, complete.curry(null));
   }
 
+  function setOrigin(origin) {
+    // B2G and marketplace use special issuers that disable primaries. Go see
+    // if the current domain uses a special issuer, if it does, set the issuer
+    // in user.js.
+    var options = {
+      origin: origin
+    };
+
+    var issuer = storage.site.get(origin, "issuer");
+    if (issuer) options.forceIssuer = issuer;
+
+    var rpInfo = bid.Models.RpInfo.create(options);
+    user.setRpInfo(rpInfo);
+  }
+
+
   /**
    * Log the user out of the current origin
    * @method logout
@@ -142,8 +195,12 @@
    * @param {function} callback
    */
   internal.logout = function(origin, callback) {
-    user.setOrigin(origin);
-    user.logout(callback, callback.curry(null));
+    function complete(status) {
+      callback && callback(status);
+    }
+
+    setOrigin(origin);
+    user.logout(callback, complete.curry(null));
   };
 
   /**
@@ -152,7 +209,78 @@
    * @param {function} callback
    */
   internal.logoutEverywhere = function(callback) {
-    user.logoutUser(callback, callback.curry(null));
+    function complete(status) {
+      callback && callback(status);
+    }
+
+    user.logoutUser(callback, complete.curry(null));
   };
+
+  internal.watch = function (callback, options, externalLog) {
+    log = externalLog || bid.Helpers.log;
+
+    try {
+      options = parseOptions(options);
+    } catch(e) {
+      return callback({error: String(e)});
+    }
+    internalWatch(callback, options);
+  };
+
+
+  function internalWatch(callback, options) {
+    var remoteOrigin = options.origin;
+    var loggedInUser = options.loggedInUser;
+    setOrigin(remoteOrigin);
+    checkAndEmit();
+
+    function checkAndEmit() {
+      // this will re-certify the user if neccesary
+      // Firefox OS 1.0.1 keeps one copy of the communication iframe in memory
+      // all the time. The communication iframe gets a copy of session context
+      // when it first loads and caches it, it is never updated even if the user
+      // uses the dialog to sign in. To avoid manually updating the cache when the user
+      // signs in using the dialog, clear the cache every time a new tab
+      // requires internalWatch.
+      user.clearContext();
+      user.getSilentAssertion(loggedInUser, function(email, assertion) {
+        if (email) {
+          // only send login events when the assertion is defined - when
+          // the 'loggedInUser' is already logged in, it's false - that is
+          // when the site already has the user logged in and does not want
+          // the resources or cost required to generate an assertion
+          if (assertion) doLogin(assertion);
+          loggedInUser = email;
+        } else if (loggedInUser !== null) {
+          // only send logout events when loggedInUser is not null, which is an
+          // indicator that the site thinks the user is logged out
+          doLogout();
+        }
+        doReady();
+      }, function(err) {
+        log('silent return: err', err);
+        doLogout();
+        doReady();
+      }, log);
+    }
+
+    function doReady(params) {
+      callback({ method: 'ready' });
+    }
+
+    function doLogin(params) {
+      // Through the _internalParams, we signify to any RP callers that are
+      // interested that this assertion was acquired without user interaction.
+      callback({ method: 'login', assertion: params, _internalParams: {silent: true} });
+    }
+
+    function doLogout() {
+      if (loggedInUser !== null) {
+        loggedInUser = null;
+        storage.site.remove(remoteOrigin, "logged_in");
+        callback({ method: 'logout' });
+      }
+    }
+  }
 
 }());

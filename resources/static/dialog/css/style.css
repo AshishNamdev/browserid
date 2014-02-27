@@ -4,15 +4,7 @@
 
 body {
   color: #383838;
-  background-color: #dee3e6;
-  background-image: url('/common/i/grain.png');
-  background-image: url("/common/i/grain.png"), -webkit-gradient(linear, left top, left bottom, from(rgba(113, 126, 137, 0)), to(rgba(113, 126, 137, 0.2)));
-  background-image: url('/common/i/grain.png'), -webkit-linear-gradient(top, rgba(113, 126, 137, 0), rgba(113, 126, 137, 0.2));
-  background-image: url('/common/i/grain.png'),    -moz-linear-gradient(top, rgba(113, 126, 137, 0), rgba(113, 126, 137, 0.2));
-  background-image: url('/common/i/grain.png'),     -ms-linear-gradient(top, rgba(113, 126, 137, 0), rgba(113, 126, 137, 0.2));
-  background-image: url('/common/i/grain.png'),      -o-linear-gradient(top, rgba(113, 126, 137, 0), rgba(113, 126, 137, 0.2));
-  background-image: url('/common/i/grain.png'),         linear-gradient(top, rgba(113, 126, 137, 0), rgba(113, 126, 137, 0.2));
-  line-height: 18px;
+  background-color: #ebeced;
 }
 
 #signIn {
@@ -20,8 +12,8 @@ body {
     left: 0;
     top: 0;
     bottom: 0;
-    width: 393px;
-    padding-right: 105px;
+    width: 425px;
+    padding-right: 136px;
 }
 
 .completing #signIn {
@@ -37,37 +29,28 @@ body {
 
 
 
-header, footer {
-    position: absolute;
-    z-index: 2;
-    box-shadow: 0 0 24px rgba(0, 0, 0, 0.05) inset;
-}
-
-header {
-    top: 0;
-    padding: 10px 20px;
-    /* The *padding is a fix for IE6 and IE7 showing scroll bars in the
-     * unsupported dialog.  Since IE6 and IE7 do not support box-sizing:
-     * border-box, the left and right padding cause these versions of IE to
-     * overflow the dialog box.
-     */
-    *padding: 10px 0;
-    border-bottom: 1px solid #c7c6c1;
-
-    /*-ms-filter through zoom: 1 are fixes for IE6 and IE7 so they show the header
-     */
-    -ms-filter:progid:DXImageTransform.Microsoft.gradient(startColorstr=#0c000000,endColorstr=#0c000000);
-    filter:progid:DXImageTransform.Microsoft.gradient(startColorstr=#0c000000,endColorstr=#0c000000);
-    zoom: 1;
-    background-image: -webkit-linear-gradient(top, rgba(0,0,0,.05), rgba(0,0,0,0));
-    background-image:    -moz-linear-gradient(top, rgba(0,0,0,.05), rgba(0,0,0,0));
-    background-image:     -ms-linear-gradient(top, rgba(0,0,0,.05), rgba(0,0,0,0));
-    background-image:      -o-linear-gradient(top, rgba(0,0,0,.05), rgba(0,0,0,0));
-    background-image:         linear-gradient(top, rgba(0,0,0,.05), rgba(0,0,0,0));
-}
 
 h2 {
     font-size: 20px;
+}
+
+.form_section h2 {
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+
+.form_section h2.large {
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 300;
+}
+
+.form_section h2.deemphasize {
+  font-size: 13px;
+  font-weight: normal;
+  line-height: 18px;
+  letter-spacing: 0;
+  text-shadow: none;
 }
 
 h3 {
@@ -75,19 +58,12 @@ h3 {
 }
 
 
-.home {
-  width: 161px;
-  height: 40px;
-  background: url("/dialog/i/persona-logo-transparent.png") 0 0 no-repeat;
-  text-indent: -9999px;
-  display: inline-block;
-  *display: block;
-  zoom: 1;
-}
 
 footer {
+    position: absolute;
+    z-index: 2;
     bottom: 0;
-    border-top: 1px solid #c7c6c1;
+    border-top: 1px solid #dfe1e2;
     /* The *padding is a fix for IE6 and IE7 showing scroll bars in the
      * unsupported dialog.  Since IE6 and IE7 do not support box-sizing:
      * border-box, the left and right padding cause these versions of IE to
@@ -96,11 +72,18 @@ footer {
     padding: 20px;
     *padding: 20px 0;
     text-align: center;
-    background-image: -webkit-linear-gradient(top, rgba(0,0,0,0), rgba(0,0,0,.05));
-    background-image:    -moz-linear-gradient(top, rgba(0,0,0,0), rgba(0,0,0,.05));
-    background-image:     -ms-linear-gradient(top, rgba(0,0,0,0), rgba(0,0,0,.05));
-    background-image:      -o-linear-gradient(top, rgba(0,0,0,0), rgba(0,0,0,.05));
-    background-image:         linear-gradient(top, rgba(0,0,0,0), rgba(0,0,0,.05));
+}
+
+/* prevent the footer text from wrapping so that its non-wrapped width can be
+ * calculated and used to dynamically size the text to fit on one line in the
+ * footer. See issue #3144.
+ */
+#footerText {
+  white-space: nowrap;
+  background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAkCAYAAADPRbkKAAABo0lEQVR42u3ZzUoCURiA4emf6I9aJUKLNkHYol3QJuoCah1oC9tHFGXUBbSqRQRBkVcR5S4JWkiF7SI3SkGBIBWElNjpvYBJB79vZgw98Cw9zIvzc86MFYlENvAF45MztFm1DsHBazqSBJg6EZMH+G/xvwd8Y0YW4L83jHsdkMceoljHFYxADgGvAhIYsJl3CSXBvHfodTvgET0V5t6EEThHu5sB4Spzd+IVRuDErYAy+h38w3EYoR03AnIOr7E1GAVh7YADhwFjis+IWc2AfYcBozBK3hHSCigg6CDgBEbRE4LyAGC3ysGPoAyjLI1+jYAPDFcIOIVxSQIdsgAgiW6bgw/DuOxUHgDM2wRkPQiIawR8YtomIAlTr6dQAcdYQN8f538LJrGF23q5iIuIoqOGjVMIKb9vo8uWYPD7QbwIH2QTtT7IHtBqMYQRq4KlxJxkKbFtMRQChlDyYzE3ZTGUIlJeL6dL6FIMOPR6Q5OxGIoBKzAOXGhuKX+QRxb3uMGlA9dII4NnFNU39XUoh0DzxVbz1WKDvdyNNeQHjn//iekX39Yl7H++PgYAAAAASUVORK5CYII='); /* source: dialog/i/persona_watermark_footer_sm.png */
+  background-size: 24px 18px;
+  background-repeat: no-repeat;
+  padding-left: 32px;
 }
 
 label {
@@ -109,16 +92,6 @@ label {
 
 label.selectable {
     cursor: pointer;
-}
-
-section {
-    display: block;
-    position: absolute;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    right: 0;
-    z-index: 0;
 }
 
 .table {
@@ -130,12 +103,6 @@ section {
 .table .vertical {
     display: table-cell;
     vertical-align: middle;
-}
-
-section > .contents {
-    display: table-cell;
-    vertical-align: middle;
-    height: 250px;
 }
 
 .form_section {
@@ -182,7 +149,7 @@ section > .contents {
     overflow: hidden;
     left: 0;
     right: 0;
-    top: 61px;
+    top: 0;
     bottom: 61px;
     /* Fix for IE6 not displaying the unsupported dialog correctly. IE6 by
      * default sets the height and width of the element to 0 meaning nothing
@@ -194,8 +161,36 @@ section > .contents {
     _height: 250px;
 }
 
-#wait, #error, #delay {
+
+section {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    right: 0;
+    z-index: 0;
+    width: 100%;
+    height: 100%;
+}
+
+section > .contents {
+    display: table-cell;
+    vertical-align: middle;
+    height: 250px;
+}
+
+/**
+ * .message_screen are sections that are overlayed on top of the main content.
+ * Things like the loading, delay, error and wait screens.
+ */
+.message_screen {
     z-index: -1;
+    /* Since all of the screens are overlayed on top of each other
+     * and since the main screen does not have styles of its own (because of
+     * header and footer styles), use opacity to control whether a screen is
+     * shown or not.
+     */
     -ms-filter:"progid:DXImageTransform.Microsoft.Alpha(Opacity=0)";
     opacity: 0;
 
@@ -220,31 +215,67 @@ section > .contents {
     transition-delay: 0.5s;
 }
 
+.message_screen .vertical {
+    padding: 0 20px;
+}
 
-.waiting #wait {
+.message_screen img {
+  display: block;
+  margin: 0 auto 30px;
+}
+
+#load {
+  background: #fff;
+  /*
+   * We want the loading screen to take up the entire screen, not just
+   * within the borders of the content
+   */
+  position: fixed;
+  text-align: center;
+}
+
+.waiting #wait, .delay #delay, .error #error, .loading #load {
     display: block;
-    z-index: 1;
     -ms-filter:"progid:DXImageTransform.Microsoft.Alpha(Opacity=100)";
     opacity: 1;
+}
+
+/**
+ * If the error or delay screens are shown, hide the load screen. If
+ * not hidden, the load screen causes a white top and bottom margin.
+ */
+.error #load, .delay #load {
+  opacity: 0;
+  -ms-filter:"progid:DXImageTransform.Microsoft.Alpha(Opacity=100)";
+  z-index: -1;
+}
+
+.waiting #wait {
+    z-index: 5;
+}
+
+.loading #load {
+    z-index: 10;
+    /*
+     * Do NOT display the "loading" screen on desktop. Too many people
+     * think it is jarring.
+     */
+    display: none;
 }
 
 .delay #delay {
-    display: block;
-    z-index: 2;
-    -ms-filter:"progid:DXImageTransform.Microsoft.Alpha(Opacity=100)";
-    opacity: 1;
+    z-index: 20;
 }
 
 .error #error, #error.unsupported, #error.cookies_disabled {
-    display: block;
-    z-index: 3;
-    -ms-filter:"progid:DXImageTransform.Microsoft.Alpha(Opacity=100)";
-    opacity: 1;
+    z-index: 30;
 }
 
 #error.unsupported {
   padding: 20px 0;
 }
+
+
 
 .unsupported {
   /*
@@ -257,11 +288,8 @@ section > .contents {
   _height: 100%;
 }
 
-#error.unsupported h2 {
-  margin: 0 0 20px;
-}
-
 #error img {
+    margin-top: 20px;
     border: none;
 }
 
@@ -269,19 +297,21 @@ section > .contents {
     color: #777;
 }
 
-#wait .vertical, #error .vertical, #delay .vertical {
-    padding: 0 20px;
+
+.rpBackground {
+  background-color: #ebeced;
 }
 
-
 #signIn .table {
-    background-color: #eff0f2;
+    background-color: #f9f9f9;
+    border-right:1px solid #bfbfbf;
+    box-shadow: 0px 1px 5px 6px #dfdfdf;
     padding: 0 20px;
 }
 
 .arrowContainer {
     position: absolute;
-    width: 105px;
+    width: 136px;
     right:  0;
     top: 0;
     bottom: 0;
@@ -292,15 +322,15 @@ section > .contents {
     position: absolute;
     top: 0;
     bottom: 0;
-    left: 0;
+    /* create overlap to avoid flicker during CSS slide transition */
+    left: -1px;
     right: 0;
-    background-image: url('/dialog/i/arrow_grey.png');
+    background-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIoAAAE4CAMAAACzLJucAAABd1BMVEXk5OTl5eW+wMC9v7/X2drPz9HLy8yRlJdTWF2Pk5bIyszd39/d3t5XW2DU1dcIEBDa2tvY2NhSV1vFx8nBwcMnJy56foGrrbBfY2gcHCIQGBhARkvNzc8bIiifoqXV1tiNkJPS09PV1tiEhIg6OkB4eIAsMjfNzc9FSk5PU1jJycvS1NVscHTW2NpeYmLMztBgZGnHyctVWV7S1Nba29zY2Nna2tzb3d0PDxfb3NzY2Nl3d345PkRKSk6MjJJqbnKAg4YxNjYbGyKoqqwkJCsPFhagoKMaISe5ub0JEhLCxMQMDBfe3t+Tlpng4ODi4+Pd3t7h4uLk5OTi4uLf39+ysrYJEhIKFBQMDBgJExMJEREIEBgLCxYODg4NDRsPDw8LCxUQEBARERESEhIUFBQXFxcVFRUAHBwaGhoAACAAACQAAAAAAAAAAAAAAAAAAAAAAAAAAADt7e3u7u7w8PDx8fHo6Oj29vb09PT39/f4+Pjl5eX5+fnzQpVyAAAAcnRSTlP9/nV0oJCIUTdQh7azOJkfraM4iIAnRWc7JSAsjyZgoVOYok0wSC6QNDeImUKiPJE9iTmat6y2wSHAq0cxNFJBTC8maSojYSd4HIEW0lri9sjv/OnbcB0aFRseIBcSExEYEA8ODQsMCQoIBwYFBAMCAQB+1LbEAAAF70lEQVR42u3d+VIcVRxHcct937O5RhG3gMomqKDijmxhiATQSCYzIInKEmRY6j68PVbXJNZ5gPP9A57gU9N36D7T3b/7QCkPrW5u/3H7zp9//b2zs7u3v7cv/VWUu+ebPcvu7t7enkcpC+daWwGWLqU8vNbuWipKbfEopxdmu5Z6uaiU0rm40d7cxiEyKGXuUku31JTy2lpra7NauhWltmiUo/nVVr10K4tKKYvvb3SXLg6RQCmf/XoLy0WilJev31suMuWfr39v4RA5lLL8brO9hUOkUMrn61guFqX8crNaLvhGK5TOVzewXCRKufYjDpFFKW/NVCej7rVL73pBo5z88BuWi0QpjQ9wArAo5er3WC4Wpbx0/wlgV6Ucf1lfL/Q+Fo1Slt5pYrlIlPIprhc0SvkJJwCNcvcLXC9YlLLwHa4XLEp5c6VbIzgBGJTTb3ECsCil89ENfKMlSpn7Bt9ogdILxjaC0aEczc9iuUgUBqNHYTB6lPIzgtGiMBg9CoPRozAYFQqD0aUwGD0Kg9GjMBgVCoPRpTAYPQqD0aOUD9cQjAIFwVgvF4vCYPQoDEaFwmB0KQxGj8Jg9CgMRoXCYHQpDEaPwmD0KOU9BKNBYTC6FAajR2EwKhQGo0thMHoUBqNHYTAqFAajS2EwehQGo0cpV1YQjAKFwehSGIwehcEoURiMJoXB6FEYjB6FwahQGIwuhcHoURiMHqW8jWA0KAxGl8Jg9CgMRo/CYFQoDEaXwmD0KAxGhcJgdCkMRo9SlqdxArAoDEaFwmB0KQxGj8Jg9CgMRoXCYHQpDEaPwmCUKAxGk8Jg9ChlaRLBaFEYjAqFwehSGIwehcHoURiMCoXB6FIYjB6FwehRGIwKhcHoUsriFK4XLAqDUaEwGF0Kg9GjMBg9CoNRoTAYXQqD0aMwGD0Kg1GhMBhdSmm8iBOARWEwShQGo0lhMHoUBqNHYTAqFAajS2EwehQGo0dhMCoUBqNLYTB6FAajR2EwKhQGo0thMHoUBqNCYTC6FAajR2EwepQqGOsC+O8bLVAYjPhYBEoVjPcdIpVSrr3eauNjcSjlykyr97HIlJM3Vu99LC6lNB6/tbVdf4lkSrn6SvV/DkdIoZQnb1ZHKINy/ERzG4vFoZSlVzdv38mglKevx1CeiqHkHKDjx2KW7aMxX+acf3GNZ1L+8Z/mnA6fjblIyLl06gzEXFDmXGY//9z/bz+cJVkph30xoZqT7+MTKT9q5PzUc5LzA9jH9WSb3uj0sx9LS+eTlJ+Qg35Yf2E95XZDzk2Yg/6YW1M5N+xGY25j5tzcPb4cc8t7KOZBgJzHIxrDKQ+NnOY8SjMS84BRzmNXnYGYh9FyHtEbi3lwMedxzsO+mIdccx79HZ9IeSA65zHxk5yH55GCZy9aVCmY8vpJ0Es5g+spryrlvMB10B/zWlvOy36jMa9A5rwYenw55nXZoZiXiHNerW4Mp7xwHvQa/kjMcIKckQ2dgZhBFjnjPcZihp7kjII57IsZkJMzNmh8ImWY0uJUyoipoMFbSMGzIW1VCqaMrgsa6De4njLmMGf440F/zEjMnEGhozHjU5cmU4bKBo3aHYoZQJwzlrkxnDKsOmiE90jMYPOcce+dgZgh+DlbA4zFbJiwPJ2yjcRhzuYaOVuOjE+kbMSyOJWyPU3Qpj1IwbMNnqoUTNn2KmgzsMH1lC3ScjaOO8jZTi9nk8HRmK0XlyZTNqQM2qZzKGbz0pwtXRvDKRvdBm3/O7KSsilyzlbRQRto52wrPhaz2frydMoW9Ic5G/MjBQ0KU1ClMAUtClPQoDAFVQpT0KIwBS0KU9CgMAVVClPQojAFLQpT0KAwBVUKU9CiMAUtClPQoTAFRQpT0KIwBQ0KU1ClMAUtClPQojAFDQpTUKUwBS0KU9CiMAUNClNQpTAFLcrRPK4MLMoj1ZwwpKBCmbvUwkJxKJ2LG5UEC0WgnF6YrZdsb6FYlMGZdr1kqw9FpSyca1USLBSBcnC+uRkg6VIeXO1JdkTJ/r9IM4KSG4Z1KwAAAABJRU5ErkJggg=='); /* source: dialog/i/arrow_grey.png */
     background-repeat: no-repeat;
     background-position: center;
-    background-color: transparent;
 }
 
-#favicon {
+.favicon {
     position: absolute;
     left: 400px;
     top: 0;
@@ -310,72 +340,76 @@ section > .contents {
     z-index: 10;
 }
 
-#favicon strong {
+/* dark text on a light background */
+.favicon.dark,
+.favicon.dark a {
+  color: #000;
+}
+
+/* light text on a dark background */
+.favicon.light,
+.favicon.light a {
+  color: #fff;
+}
+
+.favicon strong {
     font-size: 18px;
     line-height: 24px;
     text-shadow: 0 1px #fff;
 }
 
-#favicon img {
+.favicon img {
     display: block;
     margin: 0 auto;
     max-height: 100px;
     max-width: 100px;
 }
 
-#favicon h2, #favicon h3 {
+.favicon h2, .favicon h3 {
     line-height: 1.2em;
     margin: 10px 0 0 0;
+    text-shadow: none;
 }
 
-#favicon h2 {
+.favicon h2 {
     margin: 10px 0 0 0;
 }
 
-#favicon h3 {
+.favicon h3 {
     font-size: 16px;
     margin-top: 0;
 }
 
-#favicon .vertical {
+.favicon .vertical {
     display: table-cell;
     text-align: center;
     max-width: 0;
-}
-
-div#required_email {
-    padding-top: .7em;
-    font-size: 1.2em;
-    font-weight: bold;
 }
 
 .inputs > li {
   margin-top: 8px;
 }
 
-.inputs > li > label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-#selectEmail > .inputs > li {
+#emailList > li {
     margin: 0;
 }
 
-#selectEmail > .inputs > li > label {
+#emailList > li > label {
+    overflow: hidden;
+    text-overflow: ellipsis;
     padding: 3px 1px;
     white-space: nowrap;
 }
 
-#selectEmail > .inputs > li > label.preselected {
+#emailList > li > label.preselected {
     font-weight: bold;
 }
 
-#selectEmail > .inputs > li:only-child > label.selectable {
+#emailList > li:only-child > label.selectable {
     cursor: default;
 }
 
-#selectEmail > .inputs > li:only-child input[type=radio] {
+#emailList > li:only-child input[type=radio] {
     display: none;
 }
 
@@ -391,17 +425,24 @@ div#required_email {
 
 .tospp {
   font-size: 11px;
-  color: #787878;
 }
+
 
 #rptospp {
   display: none;
-  margin: 10px auto;
-  max-width: 280px;
 }
+
 
 .rptospp #rptospp {
   display: block;
+  margin: 10px auto;
+  max-width: 260px;
+}
+
+#rptospp a {
+  text-shadow: none;
+  border-bottom: 1px dotted;
+  font-weight: 400;
 }
 
 a.emphasize {
@@ -409,6 +450,7 @@ a.emphasize {
   border-radius: 2px;
   color: #484848;
   font-size: 11px;
+  margin-bottom: 6px;
   padding: 0 5px;
   display: inline-block;
   line-height: 22px;
@@ -437,18 +479,34 @@ a.emphasize:active {
 }
 
 
-#back {
-  color: #000;
-  border-bottom: 1px dotted;
-  font-weight: normal;
-}
-
 .submit > button {
     margin: 0 0 0 5px;
 }
 
-.newuser,
-.returning {
+/**
+ * Start off hiding all of the state specific elements.
+ * isEmailImmutable is used to display elements when the user must type their
+ * password but are unable to change the email address.
+ */
+.isReturning, .isStart, .isAddressInfo, .isMobile, .isEmailImmutable, .isTransitionToSecondary {
+  display: none;
+}
+
+
+/**
+* These handle the authentication page states, but do not take into account
+* any elements that have the .isMobile class.
+*/
+.returning .isReturning, .start .isStart, .addressInfo .isAddressInfo,
+.emailImmutable .isEmailImmutable, .transitionToSecondary .isTransitionToSecondary {
+  display: block;
+}
+
+/**
+ * Re-disable any elements that have the .isMobile class.
+ */
+.newuser, .isReturning.isMobile, .isStart.isMobile, .isAddressInfo.isMobile,
+.emailImmutable .isEmailMutable {
     display: none;
 }
 
@@ -479,5 +537,57 @@ a.emphasize:active {
 
 .authentication #authentication_form {
   display: block;
+}
+
+#authentication_form span.label {
+  display: none;
+}
+
+/**
+ * The lightbox shows TOS/PP agreements.
+ */
+.lightbox {
+  display: block;
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  bottom: 0;
+  /**
+   * The width and height are needed for webkit browsers
+   * to size the iframe properly
+   */
+  width: 100%;
+  height: 100%;
+  z-index: 900;
+  background-color: #111;
+  background-color: rgba(0,0,0,.9);
+  padding: 50px 60px 20px 60px;
+}
+
+.lightbox .contents {
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  border: 2px solid grey;
+  background-color: #fff;
+  border: 0;
+}
+
+.lightbox .close {
+  margin-top: -35px;
+  display: block;
+  color: red;
+  position: absolute;
+  right: 10px;
+  background: url("/common/i/closex.png") no-repeat scroll right center #000;
+  background: url("/common/i/closex.png") no-repeat scroll right center rgba(0, 0, 0, 0.6);
+  border-radius: 6px;
+  padding: 5px 28px 5px 5px;
+  font-size: 12px;
+  font-weight: bold;
+  text-transform: uppercase;
+  text-shadow: none;
+  color: #ccc;
 }
 

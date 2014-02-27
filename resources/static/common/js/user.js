@@ -5,11 +5,13 @@
 BrowserID.User = (function() {
   "use strict";
 
-  var jwcrypto, origin,
-      bid = BrowserID,
+  var bid = BrowserID,
       network = bid.Network,
       storage = bid.Storage,
       helpers = bid.Helpers,
+      mediator = bid.Mediator,
+      cryptoLoader = bid.CryptoLoader,
+      UserContext = bid.Models.UserContext,
       User,
       pollTimeout,
       provisioning = bid.Provisioning,
@@ -20,92 +22,86 @@ BrowserID.User = (function() {
       POLL_DURATION = 3000,
       pollDuration = POLL_DURATION,
       stagedEmail,
-      stagedPassword;
+      stagedPassword,
+      PERSONA_ORG_AUDIENCE = "https://login.persona.org",
+      context;
 
-  function prepareDeps() {
-    /*globals require:true*/
-    if (!jwcrypto) {
-      jwcrypto= require("./lib/jwcrypto");
-    }
+  var TRANSITION_STATES = [
+    "transition_to_secondary",
+    "transition_no_password",
+    "transition_to_primary"
+  ];
+
+  function isTransitioning(state) {
+    return (_.indexOf(TRANSITION_STATES, state) > -1);
   }
 
-  // remove identities that are no longer valid
-  function cleanupIdentities(cb) {
-    network.serverTime(function(serverTime) {
-      network.domainKeyCreationTime(function(creationTime) {
-        // Determine if a certificate is expired.  That will be
-        // if it was issued *before* the domain key was last updated or
-        // if the certificate expires in less that 5 minutes from now.
-        function isExpired(cert) {
-          // if it expires in less than 2 minutes, it's too old to use.
-          var diff = cert.payload.exp.valueOf() - serverTime.valueOf();
-          if (diff < (60 * 2 * 1000)) {
-            return true;
-          }
+  // Determine if a certificate is expired.  That will be
+  // if it was issued *before* the domain key was last updated or
+  // if the certificate expires in less that 5 minutes from now.
+  function isCertExpired(serverTime, creationTime, cert) {
+    // if it expires in less than 2 minutes, it's too old to use.
+    var diff = cert.payload.exp.valueOf() - serverTime.valueOf();
+    if (diff < (60 * 2 * 1000)) {
+      return true;
+    }
 
-          // or if it was issued before the last time the domain key
-          // was updated, it's invalid
-          if (!cert.payload.iat || cert.payload.iat < creationTime) {
-            return true;
-          }
+    // or if it was issued before the last time the domain key
+    // was updated, it's invalid
+    if (!cert.payload.iat) {
+      helpers.log('Data Format ERROR: expected cert to have iat ' +
+        'property, but found none, marking expired');
+      return true;
+    } else if (cert.payload.iat < creationTime) {
+      helpers.log('Certificate issued ' + cert.payload.iat +
+        ' is before creation time ' + creationTime + ', marking expired');
+      return true;
+    }
 
-          return false;
-        }
+    return false;
+  }
 
-        var emails = storage.getEmails();
-        var issued_identities = {};
-        prepareDeps();
-        _(emails).each(function(email_obj, email_address) {
-          try {
-            email_obj.pub = jwcrypto.loadPublicKeyFromObject(email_obj.pub);
-          } catch (x) {
-            storage.invalidateEmail(email_address);
-            return;
-          }
+  /*
+   * Throws if the email record is invalid.
+   * Record is invalid if:
+   * 1) cannot load pubkey
+   * 2) cannot load cert
+   * 3) cannot extract cert
+   * 4) cert is expired.
+   */
+  function checkRecordValidity(jwcrypto, record, serverTime, creationTime) {
+    jwcrypto.loadPublicKeyFromObject(record.pub);
 
-          // no cert? reset
-          if (!email_obj.cert) {
-            storage.invalidateEmail(email_address);
-          } else {
+    if (!record.cert)
+      throw new Error("missing cert");
+
+    var cert = jwcrypto.extractComponents(record.cert);
+    if (isCertExpired(serverTime, creationTime, cert))
+      throw new Error("expired cert");
+  }
+
+  function removeInvalidIdentities(onSuccess, onFailure) {
+    withContext(function(userContext, networkContext) {
+        var serverTime = networkContext.getServerTime();
+        var creationTime = networkContext.getDomainKeyCreationTime();
+
+        cryptoLoader.load(function(jwcrypto) {
+          var issuer = User.rpInfo.getIssuer();
+          var emails = storage.getEmails(issuer);
+          _.each(emails, function(record, address) {
             try {
-              // parse the cert
-              var cert = jwcrypto.extractComponents(emails[email_address].cert);
-
-              // check if this certificate is still valid.
-              if (isExpired(cert)) {
-                storage.invalidateEmail(email_address);
-              }
-
-            } catch (e) {
-              // error parsing the certificate!  Maybe it's of an old/different
-              // format?  just delete it.
-              helpers.log("error parsing cert for"+ email_address +":" + e);
-              storage.invalidateEmail(email_address);
+              checkRecordValidity(jwcrypto, record, serverTime, creationTime);
+            } catch (x) {
+              return storage.invalidateEmail(address, issuer);
             }
-          }
+          });
+          onSuccess();
         });
-        cb();
-      }, function(e) {
-        // we couldn't get domain key creation time!  uh oh.
-        cb();
-      });
-    });
+    }, onFailure);
   }
 
-  function setAuthenticationStatus(authenticated) {
-    if(window.$) {
-      // TODO get this out of here!
-      // jQuery is not included in the communication_iframe
-      var func = authenticated ? 'addClass' : 'removeClass';
-      $('body')[func]('authenticated');
-    }
-
-    if (!authenticated) {
-      storage.clear();
-    }
-  }
-
-  function stageAddressVerification(email, password, stagingStrategy, onComplete, onFailure) {
+  function stageAddressVerification(email, password, stagingStrategy,
+      onComplete, onFailure) {
     // These are saved for the addressVerificationPoll.  If there is
     // a stagedEmail or stagedPassword when the poll completes, try to
     // authenticate the user.
@@ -114,42 +110,40 @@ BrowserID.User = (function() {
 
     // stagingStrategy is a curried function that will have all but the
     // onComplete and onFailure functions already set up.
-    stagingStrategy(function(staged) {
-      var status = { success: staged };
+    stagingStrategy(function(status) {
+      if (!status) status = { success: false };
+      var staged = status.success;
 
       if (!staged) status.reason = "throttle";
       // Used on the main site when the user verifies - once
       // verification is complete, the user is redirected back to the
       // RP and logged in.
-      var site = User.getReturnTo();
+      var site = User.rpInfo.getReturnTo();
       if (staged && site) storage.setReturnTo(site);
       complete(onComplete, status);
     }, onFailure);
   }
 
-  function markAddressVerified(email) {
-    var idInfo = storage.getEmail(email) || {};
-    idInfo.verified = true;
-    storage.addSecondaryEmail(email, idInfo);
-  }
-
-  function completeAddressVerification(completeFunc, token, password, onComplete, onFailure) {
+  function completeAddressVerification(completeFunc, token, password,
+      onComplete, onFailure) {
     User.tokenInfo(token, function(info) {
       var invalidInfo = { valid: false };
       if (info) {
-        completeFunc(token, password, function (valid) {
+        completeFunc(token, password, function (resp) {
+          var valid = resp.success;
           var result = invalidInfo;
 
-          if (valid) {
-            result = _.extend({ valid: valid }, info);
-            // Now that the address is verified, its verified bit has to be
-            // updated as well or else the user will be forced to verify the
-            // address again.
-            markAddressVerified(info.email);
-            storage.setReturnTo("");
-          }
+          withContext(function(context) {
+            if (valid) {
+              result = _.extend({ valid: valid }, info);
+              storage.setReturnTo("");
+              // If the user has successfully completed an address verification,
+              // they are authenticated to the password status.
+              context.setAuthLevel("password");
+            }
 
-          complete(onComplete, result);
+            complete(onComplete, result);
+          }, onFailure);
         }, onFailure);
       } else if (onComplete) {
         onComplete(invalidInfo);
@@ -158,8 +152,13 @@ BrowserID.User = (function() {
 
   }
 
+  /**
+   * onSuccess, if called, will return with "complete" if the verification
+   * completes and the user is authed to the "password" level, or "mustAuth" if
+   * the user must enter their password.
+   */
   function addressVerificationPoll(checkFunc, email, onSuccess, onFailure) {
-    function userVerified(completionStatus) {
+    function userVerified(resp) {
       if (stagedEmail && stagedPassword) {
         // The user has set their email and password as part of the
         // staging flow. Log them in now just to make sure their
@@ -168,68 +167,81 @@ BrowserID.User = (function() {
         // completed verification. See issue #1682
         // https://github.com/mozilla/browserid/issues/1682
         User.authenticate(stagedEmail, stagedPassword, function(authenticated) {
-          completionStatus = authenticated ? "complete" : "mustAuth";
-          completeVerification(completionStatus);
+          // The address verification poll does not send back a userid.
+          // Use the userid set in User.authenticate
+          withContext(function(context) {
+            resp.userid = context.getUserId();
+            resp.status = authenticated ? "complete" : "mustAuth";
+            completeVerification(resp);
+          }, onFailure);
         }, onFailure);
 
         stagedEmail = stagedPassword = null;
       }
       else {
         // If the user's completionStatus is complete but their
-        // authStatus is not password, that means they have not entered in
-        // their authentication credentials this session and *must*
-        // do so.  If not, the backend will reject any requests to certify
-        // a key because the user will not have the correct creds to do so.
+        // original authStatus was not password, meaning they have
+        // not entered in their authentication credentials this session.
+        // If the user is not authenticated to the password level, the backend
+        // will reject any requests to certify a key because the user will
+        // not have the correct creds to do so.
         // See issue #2088 https://github.com/mozilla/browserid/issues/2088
-        network.checkAuth(function(authStatus) {
-          if (completionStatus === "complete" && authStatus !== "password")
-            completionStatus = "mustAuth";
+        //
+        // Since a user may have entered their password on the main site during
+        // a password reset, the only reliable way to know the user's auth
+        // status is to ask the backend. Clear the current context and ask
+        // the backend for an updated session_context.
+        clearContext();
+        User.checkAuthentication(function(authStatus) {
+          if (resp.status === "complete" && authStatus !== "password")
+            resp.status = "mustAuth";
 
-          completeVerification(completionStatus);
+          // The address verification poll does not send back a userid.
+          // use the userid set in onContextChange.
+          withContext(function(context) {
+            resp.userid = context.getUserId();
+            completeVerification(resp);
+          }, onFailure);
         }, onFailure);
       }
     }
 
-    function completeVerification(status) {
+    function completeVerification(resp) {
       // As soon as the registration comes back as complete, we should
       // ensure that the stagedOnBehalfOf is cleared so there is no stale
       // data.
       storage.setReturnTo("");
-
-      // Now that the address is verified, its verified bit has to be
-      // updated as well or else the user will be forced to verify the
-      // address again.
-      markAddressVerified(email);
-
-      // To avoid too many address_info requests, returns from each
-      // address_info request are cached.  If the user is doing
-      // a addressVerificationPoll, it means the user was registering the address
-      // and the registration has completed.  Because the status is
-      // "complete" or "known", we know that the address is known, so we
-      // toggle the field to be up to date.  If the known field remains
-      // false, then the user is redirected back to the authentication
-      // page and the system thinks the address must be verified again.
-      if(addressCache[email]) {
-        addressCache[email].known = true;
-      }
 
       // registrationComplete is used in shouldAskIfUsersComputer to
       // prevent the user from seeing the "is this your computer" screen if
       // they just completed a registration.
       registrationComplete = true;
 
-      if (status === "complete") {
-        User.syncEmails(function() {
-          complete(onSuccess, status);
-        }, onFailure);
-      }
-      else {
-        complete(onSuccess, status);
-      }
+      // If there is any sort of userid and auth_status, sync the emails.
+      // If the user has to enter their password and status is mustAuth,
+      // the required_email module expects the emails to already be synced.
+      // See issue #3178
+      withContext(function(context) {
+        // If the status is still complete, the user's auth status is
+        // definitively password.
+        if (resp.status === "complete") {
+          loggedIn("password", resp.userid);
+        }
+
+        if (context.isUserAuthenticated()) {
+          User.syncEmails(function() {
+            complete(onSuccess, resp.status);
+          }, onFailure);
+        }
+        else {
+          complete(onSuccess, resp.status);
+        }
+      }, onFailure);
     }
 
     function poll() {
-      checkFunc(email, function(status) {
+      checkFunc(email, function(resp) {
+        var status = resp.status;
         // registration status checks the status of the last initiated registration,
         // it's possible return values are:
         //   'complete' - registration has been completed
@@ -237,7 +249,7 @@ BrowserID.User = (function() {
         //   'mustAuth' - user must authenticate
         //   'noRegistration' - no registration is in progress
         if (status === "complete" || status === "mustAuth") {
-          userVerified(status);
+          userVerified(resp);
         }
         else if (status === 'pending') {
           pollTimeout = setTimeout(poll, pollDuration);
@@ -258,13 +270,8 @@ BrowserID.User = (function() {
     }
   }
 
-  function checkEmailType(type) {
-    if (type !== 'secondary' && type !== 'primary')
-      throw new Error("invalid email type (should be 'secondary' or 'primary'): " + type);
-  }
-
   function getIdPName(addressInfo) {
-    return addressInfo.email.replace(/.*@/, "");
+    return helpers.getDomainFromEmail(addressInfo.email);
   }
 
   /**
@@ -275,23 +282,43 @@ BrowserID.User = (function() {
    * @param {function} [onComplete] - Called on successful completion.
    * @param {function} [onFailure] - Called on error.
    */
-  function persistEmailKeypair(email, type, keypair, cert, onComplete, onFailure) {
-    checkEmailType(type);
-    var now = new Date();
-    var email_obj = storage.getEmails()[email] || {
-      created: now,
-      type: type
-    };
+  function persistEmailKeypair(email, keypair, cert, onComplete, onFailure) {
+    // XXX This needs to be looked at to make sure caching does not bite us.
+    var issuer = User.rpInfo.getIssuer();
+    User.addressInfo(email, function(info) {
+      var now = new Date();
+      var email_obj = storage.getEmail(email, issuer) || {
+        created: now
+      };
 
-    _.extend(email_obj, {
-      updated: now,
-      pub: keypair.publicKey.toSimpleObject(),
-      priv: keypair.secretKey.toSimpleObject(),
-      cert: cert
-    });
+      _.extend(email_obj, {
+        updated: now,
+        pub: keypair.publicKey.toSimpleObject(),
+        priv: keypair.secretKey.toSimpleObject(),
+        cert: cert
+      });
 
-    storage.addEmail(email, email_obj);
-    if (onComplete) onComplete(true);
+      if (info.state === "unverified") {
+        email_obj.unverified = true;
+      } else if (email_obj.unverified) {
+        delete email_obj.unverified;
+      }
+
+      storage.addEmail(email, email_obj, issuer);
+      if (onComplete) onComplete(true);
+    }, onFailure);
+  }
+
+  /**
+   * Persist an email address without a keypair
+   * @method persistEmailWithoutKeypair
+   * @param {object} options - options to save
+   * @param {string} options.email - Email address to persist.
+   */
+  function persistEmailWithoutKeypair(options, issuer) {
+    storage.addEmail(options.email, {
+      created: new Date()
+    }, issuer);
   }
 
   /**
@@ -300,32 +327,86 @@ BrowserID.User = (function() {
    * @method certifyEmailKeypair
    */
   function certifyEmailKeypair(email, keypair, onComplete, onFailure) {
-    network.certKey(email, keypair.publicKey, function(cert) {
-      // emails that *we* certify are always secondary emails
-      persistEmailKeypair(email, "secondary", keypair, cert, onComplete, onFailure);
+    var rpInfo = User.rpInfo;
+    network.certKey(email, keypair.publicKey, rpInfo.getIssuer(), rpInfo.getAllowUnverified(),
+        function(cert) {
+      persistEmailKeypair(email, keypair, cert, onComplete, onFailure);
     }, onFailure);
   }
 
-  /**
-   * Persist an email address without a keypair
-   * @method persistEmail
-   * @param {object} options - options to save
-   * @param {string} options.email - Email address to persist.
-   * @param {string} options.type - Is the email a 'primary' or a 'secondary' address?
-   * @param {string} options.verified - If the email is 'secondary', is it verified?
-   */
-  function persistEmail(options) {
-    checkEmailType(options.type);
-    storage.addEmail(options.email, {
-      created: new Date(),
-      type: options.type,
-      verified: options.verified
-    });
+
+  function withContext(onSuccess, onFailure) {
+    network.withContext(function(networkContext) {
+      // the context object will have been updated in onContextChange.
+      onSuccess(context, networkContext);
+    }, onFailure);
   }
 
+  function clearContext() {
+    network.clearContext();
+  }
+
+  function onContextChange(msg, newContext) {
+    context = UserContext.create(newContext);
+    var authLevel = context.getAuthLevel();
+    if (window.$) {
+      // TODO get this out of here!
+      // jQuery is not included in the communication_iframe
+      var func = !!authLevel ? 'addClass' : 'removeClass';
+      $('body')[func]('authenticated');
+    }
+
+    if (context.isUserAuthenticated()) {
+      // when session context returns with an authenticated user, update
+      // localStorage to indicate we've seen this user on this device
+      storage.usersComputer.setSeen(context.getUserId());
+    }
+    else {
+      storage.clear();
+    }
+  }
+
+  function loggedIn(authLevel, userId, onComplete, onFailure) {
+    withContext(function(context) {
+      context.setAuthLevel(authLevel);
+      context.setUserId(userId);
+      complete(onComplete, true);
+    }, onFailure);
+  }
+
+  function loggedOut(onComplete, onFailure) {
+    withContext(function(context) {
+      storage.clear();
+
+      context.setAuthLevel(false);
+      context.setUserId(null);
+      complete(onComplete, true);
+    }, onFailure);
+  }
+
+  function handleAuthenticationResponse(email, type, onComplete,
+      onFailure, status) {
+    var authenticated = status.success;
+    if (!authenticated) return loggedOut(complete.curry(onComplete, false), onFailure);
+
+    var userid = status.userid;
+    loggedIn(type, userid, function() {
+      // The back end can suppress asking the user whether this is their
+      // computer. This happens on FirefoxOS devices for now and may expand
+      // in the future.
+      if (status.suppress_ask_if_users_computer) {
+        storage.usersComputer.setConfirmed(userid);
+      }
+
+      User.syncEmails(complete.curry(onComplete, authenticated), onFailure);
+    }, onFailure);
+  }
 
   User = {
     init: function(config) {
+      config = config || {};
+      mediator.subscribe('context_info', onContextChange);
+
       if (config.provisioning) {
         provisioning = config.provisioning;
       }
@@ -340,14 +421,23 @@ BrowserID.User = (function() {
     reset: function() {
       provisioning = BrowserID.Provisioning;
       User.resetCaches();
+      User.rpInfo = null;
       registrationComplete = false;
       pollDuration = POLL_DURATION;
-      stagedEmail = stagedPassword = null;
+      stagedEmail = stagedPassword = context = null;
     },
 
     resetCaches: function() {
       addressCache = {};
       primaryAuthCache = {};
+    },
+
+    /**
+     * Set the RP info
+     * @method setRpInfo
+     */
+    setRpInfo: function(rpInfo) {
+      User.rpInfo = rpInfo;
     },
 
     /**
@@ -360,51 +450,33 @@ BrowserID.User = (function() {
       network = networkInterface;
     },
 
-    /**
-     * setOrigin
-     * @method setOrigin
-     * @param {string} origin
-     */
-    setOrigin: function(originArg) {
-      origin = originArg;
-    },
-
-    /**
-     * Get the origin of the current host being signed in to.
-     * @method getOrigin
-     * @return {string} origin
-     */
-    getOrigin: function() {
-      return origin;
-    },
-
     setOriginEmail: function(email) {
-      storage.site.set(origin, "email", email);
+      storage.site.set(User.rpInfo.getOrigin(), "email", email);
     },
 
     getOriginEmail: function() {
-      return storage.site.get(origin, "email");
+      return storage.site.get(User.rpInfo.getOrigin(), "email");
     },
 
     /**
-     * Get the hostname for the set origin
-     * @method getHostname
-     * @returns {string}
+     * Return the user's userid, which will an integer if the user
+     * is authenticated, undefined otherwise.
+     *
+     * @method userid
      */
-    getHostname: function() {
-      return origin.replace(/^.*:\/\//, "").replace(/:\d*$/, "");
+    userid: function(onComplete, onFailure) {
+      if (!onComplete) throw new Error("no longer supports sync get");
+      withContext(function(context) {
+        complete(onComplete, context.getUserId());
+      }, onFailure);
     },
 
-    setReturnTo: function(returnTo) {
-      this.returnTo = returnTo;
-    },
-
-    getReturnTo: function() {
-      return this.returnTo;
-    },
+    withContext: withContext,
+    clearContext: clearContext,
 
     /**
-     * Create a user account - this creates an user account that must be verified.
+     * Create a user account - this creates an user account that must
+     * be verified.
      * @method createSecondaryUser
      * @param {string} email
      * @param {string} password
@@ -413,8 +485,18 @@ BrowserID.User = (function() {
      */
     createSecondaryUser: function(email, password, onComplete, onFailure) {
       stageAddressVerification(email, password,
-        network.createUser.bind(network, email, password, origin),
-        onComplete, onFailure);
+        network.createUser.bind(network, email, password, User.rpInfo), function(status) {
+              // If creating an unverified account, the user will not go
+              // through the verification flow while the dialog is open and the
+              // cache will not be updated accordingly. Update the cache now.
+              if (status.unverified) {
+                var cachedAddress = addressCache[email];
+                if (cachedAddress) {
+                  cachedAddress.state = "unverified";
+                }
+              }
+              complete(onComplete, status);
+            }, onFailure);
     },
 
     /**
@@ -469,13 +551,12 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - called on failure
      */
     provisionPrimaryUser: function(email, info, onComplete, onFailure) {
-
       User.primaryUserAuthenticationInfo(email, info, function(authInfo) {
-        if(authInfo.authenticated) {
-          persistEmailKeypair(email, "primary", authInfo.keypair, authInfo.cert,
+        if (authInfo.authenticated) {
+          persistEmailKeypair(email, authInfo.keypair, authInfo.cert,
             function() {
               // We are getting an assertion for persona.org.
-              User.getAssertion(email, "https://login.persona.org", function(assertion) {
+              User.getAssertion(email, PERSONA_ORG_AUDIENCE, function(assertion) {
                 if (assertion) {
                   onComplete("primary.verified", {
                     assertion: assertion
@@ -508,29 +589,28 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - called on failure
      */
     primaryUserAuthenticationInfo: function(email, info, onComplete, onFailure) {
-      var idInfo = storage.getEmail(email),
-          self=this;
+      var idInfo = storage.getEmail(email, User.rpInfo.getIssuer());
 
       primaryAuthCache = primaryAuthCache || {};
 
       function complete(info) {
         primaryAuthCache[email] = info;
-        onComplete && _.defer(onComplete.curry(info));
+        onComplete && _.defer(function() {
+          onComplete(info);
+        });
       }
 
-      if(primaryAuthCache[email]) {
+      if (primaryAuthCache[email]) {
         // If we have the info in our cache, we most definitely do not have to
         // ask for it.
-        complete(primaryAuthCache[email]);
-        return;
+        return complete(primaryAuthCache[email]);
       }
-      else if(idInfo && idInfo.cert) {
+      else if (idInfo && idInfo.cert) {
         // If we already have the info in storage, we know the user has a valid
         // cert with their IdP, we say they are authenticated and pass back the
         // appropriate info.
         var userInfo = _.extend({authenticated: true}, idInfo, info);
-        complete(userInfo);
-        return;
+        return complete(userInfo);
       }
 
       provisioning(
@@ -549,32 +629,19 @@ BrowserID.User = (function() {
           complete(userInfo);
         },
         function(error) {
-          if (error.code === "primaryError" && error.msg === "user is not authenticated as target user") {
+          // issue #2339 - in case an error is raised we don't care
+          // about the specific error code.
+          if (error.code === "primaryError") {
             var userInfo = _.extend({
               authenticated: false
             }, info);
             complete(userInfo);
           }
           else {
-            onFailure(info);
+            onFailure($.extend(info, { action: { message: error }}));
           }
         }
       );
-    },
-
-    /**
-     * Get the IdP authentication status for a user.
-     * @method isUserAuthenticatedToPrimary
-     * @param {string} email
-     * @param {object} info - provisioning info
-     * @param {function} [onComplete] - called when complete.  Called with
-     *   status field - true if user authenticated with IdP, false otw.
-     * @param {function} [onFailure] - called on failure
-     */
-    isUserAuthenticatedToPrimary: function(email, info, onComplete, onFailure) {
-      User.primaryUserAuthenticationInfo(email, info, function(authInfo) {
-        onComplete(authInfo.authenticated);
-      }, onFailure);
     },
 
     /**
@@ -590,9 +657,7 @@ BrowserID.User = (function() {
      * Cancel the waitForUserValidation poll
      * @method cancelUserValidation
      */
-    cancelUserValidation: function() {
-      cancelRegistrationPoll();
-    },
+    cancelUserValidation: cancelRegistrationPoll,
 
     /**
      * Get site and email info for a token
@@ -603,7 +668,7 @@ BrowserID.User = (function() {
      */
     tokenInfo: function(token, onComplete, onFailure) {
       network.emailForVerificationToken(token, function (info) {
-        if(info) {
+        if (info) {
           info = _.extend(info, { returnTo: storage.getReturnTo() });
         }
 
@@ -633,18 +698,9 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - Called on error.
      */
     canSetPassword: function(onComplete, onFailure) {
-      User.hasSecondary(onComplete, onFailure);
-    },
-
-    /**
-     * Set the initial password of the current user.
-     * @method setPassword
-     * @param {string} password - password to set
-     * @param {function} [onComplete] - Called on successful completion.
-     * @param {function} [onFailure] - Called on error.
-     */
-    setPassword: function(password, onComplete, onFailure) {
-      network.setPassword(password, onComplete, onFailure);
+      withContext(function(ctx) {
+        complete(onComplete, ctx.hasPassword());
+      }, onFailure);
     },
 
     /**
@@ -658,33 +714,44 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - called on XHR failure.
      */
     changePassword: function(oldpassword, newpassword, onComplete, onFailure) {
-      network.changePassword(oldpassword, newpassword, onComplete, onFailure);
+      network.changePassword(oldpassword, newpassword, function(resp) {
+        // successful change of password will upgrade a session to password
+        // level auth
+        var success = resp.success;
+        if (!success)
+          return complete(onComplete, success);
+
+        withContext(function(context) {
+          loggedIn("password", context.getUserId(),
+              onComplete, onFailure);
+        }, onFailure);
+      }, onFailure);
     },
 
     /**
      * Request a password reset for the given email address.
      * @method requestPasswordReset
      * @param {string} email
-     * @param {string} password
      * @param {function} [onComplete] - Callback to call when complete, called
      * with a single object, info.
      *    info.status {boolean} - true or false whether request was successful.
      *    info.reason {string} - if status false, reason of failure.
      * @param {function} [onFailure] - Called on XHR failure.
      */
-    requestPasswordReset: function(email, password, onComplete, onFailure) {
+    requestPasswordReset: function(email, onComplete, onFailure) {
+      var rpInfo = User.rpInfo;
       User.addressInfo(email, function(info) {
         // user is not known.  Can't request a password reset.
-        if (!info.known) {
-          complete(onComplete, { success: false, reason: "invalid_user" });
+        if (info.state === "unknown") {
+          complete(onComplete, { success: false, reason: "invalid_email" });
         }
         // user is trying to reset the password of a primary address.
         else if (info.type === "primary") {
           complete(onComplete, { success: false, reason: "primary_address" });
         }
         else {
-          stageAddressVerification(email, password,
-            network.requestPasswordReset.bind(network, email, password, origin),
+          stageAddressVerification(email, null,
+            network.requestPasswordReset.bind(network, email, rpInfo),
             onComplete, onFailure);
         }
       }, onFailure);
@@ -725,19 +792,14 @@ BrowserID.User = (function() {
      * @param {function} [onFailure]
      */
     requestEmailReverify: function(email, onComplete, onFailure) {
-      var idInfo = storage.getEmail(email);
-      if (!idInfo) {
+      if (!storage.getEmail(email, User.rpInfo.getIssuer())) {
         // user does not own this address.
         complete(onComplete, { success: false, reason: "invalid_email" });
       }
-      else if (idInfo.verified) {
-        // this email is already verified, cannot be reverified.
-        complete(onComplete, { success: false, reason: "verified_email" });
-      }
-      else if (!idInfo.verified) {
-        // this address is unverified, try to reverify it.
+      else {
+        // try to reverify this address.
         stageAddressVerification(email, null,
-          network.requestEmailReverify.bind(network, email, origin),
+          network.requestEmailReverify.bind(network, email, User.rpInfo),
           onComplete, onFailure);
       }
     },
@@ -763,6 +825,64 @@ BrowserID.User = (function() {
     cancelWaitForEmailReverifyComplete: cancelRegistrationPoll,
 
     /**
+     * Request a transition to secondary for the given email address.
+     * @method requestTransitionToSecondary
+     * @param {string} email
+     * @param {string} password
+     * @param {function} [onComplete] - Callback to call when complete, called
+     * with a single object, info.
+     *    info.status {boolean} - true or false whether request was successful.
+     *    info.reason {string} - if status false, reason of failure.
+     * @param {function} [onFailure] - Called on XHR failure.
+     */
+    requestTransitionToSecondary: function(email, password, onComplete, onFailure) {
+      var rpInfo = User.rpInfo;
+      User.addressInfo(email, function(info) {
+        // user is not known.  Can't request a transition to secondary.
+        if (info.state === "unknown") {
+          complete(onComplete, { success: false, reason: "invalid_email" });
+        }
+        // user is trying to transition to a secondary for a primary address.
+        else if (info.type === "primary") {
+          complete(onComplete, { success: false, reason: "primary_address" });
+        }
+        else {
+          stageAddressVerification(email, password,
+            network.requestTransitionToSecondary.bind(network, email, password, rpInfo),
+            onComplete, onFailure);
+        }
+      }, onFailure);
+    },
+
+    /**
+     * Verify the transition to secondary for a user.
+     * @method completeTransitionToSecondary
+     * @param {string} token - token to verify.
+     * @param {string} password
+     * @param {function} [onComplete] - Called on completion.
+     *   Called with an object with valid, email, and origin if valid, called
+     *   with valid=false otw.
+     * @param {function} [onFailure] - Called on error.
+     */
+    completeTransitionToSecondary: completeAddressVerification.curry(network.completeTransitionToSecondary),
+
+    /**
+     * Wait for the transition to secondary to complete
+     * @method waitForTransitionToSecondaryComplete
+     * @param {string} email - email address to check.
+     * @param {function} [onSuccess] - Called to give status updates.
+     * @param {function} [onFailure] - Called on error.
+     */
+    waitForTransitionToSecondaryComplete: addressVerificationPoll.curry(network.checkTransitionToSecondary),
+
+    /**
+     * Cancel the waitForTransitionToSecondaryComplete poll
+     * @method cancelWaitForTransitionToSecondaryComplete
+     */
+    cancelWaitForTransitionToSecondaryComplete: cancelRegistrationPoll,
+
+
+    /**
      * Cancel the current user's account.  Remove last traces of their
      * identity.
      * @method cancelUser
@@ -771,12 +891,8 @@ BrowserID.User = (function() {
      */
     cancelUser: function(onComplete, onFailure) {
       network.cancelUser(function() {
-        setAuthenticationStatus(false);
-        if (onComplete) {
-          onComplete();
-        }
+        loggedOut(onComplete, onFailure);
       }, onFailure);
-
     },
 
     /**
@@ -787,19 +903,11 @@ BrowserID.User = (function() {
      */
     logoutUser: function(onComplete, onFailure) {
       User.checkAuthentication(function(authenticated) {
-        if (authenticated) {
-          // logout of all websites
-          storage.logoutEverywhere();
+        if (!authenticated) return complete(onComplete, authenticated);
 
-          // log out of browserid
-          network.logout(function() {
-            setAuthenticationStatus(false);
-            complete(onComplete, !!authenticated);
-          }, onFailure);
-        }
-        else {
-          complete(onComplete, authenticated);
-        }
+        network.logout(function() {
+          loggedOut(onComplete, onFailure);
+        }, onFailure);
       }, onFailure);
     },
 
@@ -811,69 +919,73 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - Called on error.
      */
     syncEmails: function(onComplete, onFailure) {
-      cleanupIdentities(function () {
+      removeInvalidIdentities(function () {
         var issued_identities = User.getStoredEmailKeypairs();
 
-        network.listEmails(function(emails) {
+        network.listEmails(function(server_emails) {
+          withContext(function(context) {
+            var userid = context.getUserId();
+            // update our local storage map of email addresses to user ids
+            if (userid) {
+              storage.updateEmailToUserIDMapping(userid, server_emails);
+            }
+          });
+
           // lists of emails
           var client_emails = _.keys(issued_identities);
-          var server_emails = _.keys(emails);
 
-          var emails_to_add = _.difference(server_emails, client_emails);
-          var emails_to_remove = _.difference(client_emails, server_emails);
-          var emails_to_update = _.intersection(client_emails, server_emails);
+          var emails_to_add_pair = [_.difference(server_emails, client_emails)];
+          var emails_to_remove_pair = [_.difference(client_emails, server_emails)];
+          var emails_to_update_pair = [_.intersection(client_emails, server_emails)];
+
+          var issuer = User.rpInfo.getIssuer();
+          if (!User.rpInfo.isDefaultIssuer()) {
+            var force_issuer_identities = storage.getEmails(issuer);
+            var force_issuer_emails = _.keys(force_issuer_identities);
+            emails_to_add_pair.push(_.difference(server_emails, force_issuer_emails));
+            emails_to_remove_pair.push(_.difference(force_issuer_emails, server_emails));
+            emails_to_update_pair.push(_.intersection(force_issuer_emails, server_emails));
+          }
 
           // remove emails
-          _.each(emails_to_remove, function(email) {
-            storage.removeEmail(email);
+          _.each(emails_to_remove_pair, function (emails_to_remove, i) {
+            _.each(emails_to_remove, function(email) {
+              if (0 === i)
+                storage.removeEmail(email, "default");
+              else
+                storage.removeEmail(email, issuer);
+            });
           });
 
           // these are new emails
-          _.each(emails_to_add, function(email) {
-            var emailInfo = emails[email];
-
-            persistEmail({
-              email: email,
-              type: emailInfo.type || "secondary",
-              verified: emailInfo.verified
+          _.each(emails_to_add_pair, function(emails_to_add, i) {
+            _.each(emails_to_add, function(email) {
+              if (0 === i) {
+                persistEmailWithoutKeypair({ email: email }, "default");
+              } else {
+                // issuer is always a secondary
+                persistEmailWithoutKeypair({ email: email }, issuer);
+              }
             });
           });
-
-          // update the type and verified status of stored emails
-          _.each(emails_to_update, function(email) {
-            var emailInfo = emails[email],
-                storedEmailInfo = storage.getEmail(email);
-
-            _.extend(storedEmailInfo, {
-              type: emailInfo.type,
-              verified: emailInfo.verified
-            });
-
-            storage.addEmail(email, storedEmailInfo);
-          });
-
           complete(onComplete);
-
         }, onFailure);
-      });
+      }, onFailure);
     },
 
     /**
      * Check whether the current user is authenticated.  Calls the callback
      * with false if cookies are disabled.
      * @method checkAuthentication
-     * @param {function} [onComplete] - Called when check is complete with one
-     * boolean parameter, authenticated.  authenticated will be true if user is
+     * @param {function} [onComplete] - Called with user's auth level if
      * authenticated, false otw.
      * @param {function} [onFailure] - Called on error.
      */
     checkAuthentication: function(onComplete, onFailure) {
       network.cookiesEnabled(function(cookiesEnabled) {
-        if(cookiesEnabled) {
-          network.checkAuth(function(authenticated) {
-            setAuthenticationStatus(authenticated);
-            if (!authenticated) authenticated = false;
-            complete(onComplete, authenticated);
+        if (cookiesEnabled) {
+          withContext(function(context) {
+            complete(onComplete, context.getAuthLevel());
           }, onFailure);
         }
         else {
@@ -895,11 +1007,20 @@ BrowserID.User = (function() {
       User.checkAuthentication(function(authenticated) {
         if (authenticated) {
           User.syncEmails(function() {
-            onComplete && onComplete(authenticated);
+            // no emails means they must have been removed from this
+            // account. at any rate, the user can't do anything without
+            // any emails, so log them out.
+            if (storage.getEmailCount() === 0) {
+              User.logoutUser(function() {
+                complete(onComplete, false);
+              }, onFailure);
+            } else {
+              complete(onComplete, authenticated);
+            }
           }, onFailure);
         }
         else {
-          onComplete && onComplete(authenticated);
+          complete(onComplete, authenticated);
         }
       }, onFailure);
     },
@@ -915,25 +1036,9 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - Called on error.
      */
     authenticate: function(email, password, onComplete, onFailure) {
-      // password is out of length range.  Don't even send the request
-      // and waste backend cycles. See issue #2032.
-      if (password.length < bid.PASSWORD_MIN_LENGTH
-       || password.length > bid.PASSWORD_MAX_LENGTH) {
-        complete(onComplete, false);
-        return;
-      }
-
-      network.authenticate(email, password, function(authenticated) {
-        setAuthenticationStatus(authenticated);
-
-        if(authenticated) {
-          User.syncEmails(function() {
-            onComplete && onComplete(authenticated);
-          }, onFailure);
-        } else if (onComplete) {
-          onComplete(authenticated);
-        }
-      }, onFailure);
+      network.authenticate(email, password, User.rpInfo.getAllowUnverified(),
+          handleAuthenticationResponse.curry(email, "password", onComplete,
+              onFailure), onFailure);
     },
 
     /**
@@ -947,17 +1052,9 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - Called on error.
      */
     authenticateWithAssertion: function(email, assertion, onComplete, onFailure) {
-      network.authenticateWithAssertion(email, assertion, function(authenticated) {
-        setAuthenticationStatus(authenticated);
-
-        if (authenticated) {
-          User.syncEmails(function() {
-            complete(onComplete, authenticated);
-          }, onFailure);
-        } else {
-          complete(onComplete, authenticated);
-        }
-      }, onFailure);
+      network.authenticateWithAssertion(email, assertion,
+          handleAuthenticationResponse.curry(email, "assertion", onComplete,
+              onFailure), onFailure);
 
     },
 
@@ -984,8 +1081,6 @@ BrowserID.User = (function() {
      *     type: <secondary|primary>
      *     known: boolean, present if type is secondary.  True if email
      *        address is registered with BrowserID.
-     *     authed: boolean, present if type is primary - whether the user
-     *        is authenticated to the IdP as this user.
      *     auth: string - url to send users for auth - present if type is
      *        primary.
      *     prov: string - url to embed for silent provisioning - present
@@ -994,33 +1089,90 @@ BrowserID.User = (function() {
      */
     addressInfo: function(email, onComplete, onFailure) {
       function complete(info) {
-        info.email = email;
-
+        // key off of both the normalized email entered typed email so
+        // that the cache is maximally effective.
         addressCache[email] = info;
+        addressCache[info.email] = info;
         onComplete && onComplete(info);
       }
 
-      if(addressCache[email]) {
-        complete(addressCache[email]);
+      if (addressCache[email]) {
+        return complete(addressCache[email]);
       }
-      else {
-        network.addressInfo(email, function(info) {
-          info.email = email;
-          if(info.type === "primary") {
-            User.isEmailRegistered(email, function(registered) {
-              User.isUserAuthenticatedToPrimary(email, info, function(authed) {
-                info.known = registered;
-                info.authed = authed;
-                info.idpName = getIdPName(info);
-                complete(info);
-              }, onFailure);
-            }, onFailure);
+
+      network.addressInfo(email, User.rpInfo.getIssuer(), function(info) {
+        // update the email with the normalized email if it is available.
+        // The normalized email is stored in the cache.
+        var normalizedEmail = info.normalizedEmail || email;
+        info.email = normalizedEmail;
+        User.checkForInvalidCerts(normalizedEmail, info, function(cleanedInfo) {
+          if (cleanedInfo.type === "primary") {
+            cleanedInfo.idpName = _.escape(getIdPName(cleanedInfo));
+            complete(cleanedInfo);
           }
           else {
-            complete(info);
+            complete(cleanedInfo);
           }
-        }, onFailure);
+        });
+      }, onFailure);
+    },
+
+    /**
+     * Checks for outdated certificates and clears them from storage.
+     * Returns original info, may have been altered
+     * @param {string} email - Email address to check.
+     * @param {object} info - Output from addressInfo callback
+     * @param {function} done - called with object when complete.
+     */
+    checkForInvalidCerts: function(email, info, done) {
+      function clearCert(email, idInfo) {
+        delete idInfo.priv;
+        delete idInfo.cert;
+        delete primaryAuthCache[email];
+        storage.addEmail(email, idInfo);
       }
+
+      cryptoLoader.load(function(jwcrypto) {
+        var record = User.getStoredEmailKeypair(email);
+
+        if (!(record && record.cert)) return complete(done, info);
+
+        var prevIssuer;
+        try {
+          prevIssuer =
+              jwcrypto.extractComponents(record.cert).payload.iss;
+        } catch (e) {
+          // error parsing the certificate! Maybe it's of an
+          // old/different format? clear cert.
+          helpers.log("Looking for issuer, " +
+              "error parsing cert for"+ email +":" + String(e));
+          clearCert(email, record);
+        }
+
+        // If the address is vouched for by the fallback IdP, the issuer will
+        // be the fallback IdP. This takes care of addresses that are
+        // beginning the transition state.
+        if (info.issuer !== prevIssuer) {
+          // issuer has changed... clear cert.
+          clearCert(email, record);
+
+          // If the issuer has changed, then silent assertions should not be
+          // generated until the user verifies with the new issuer. Keep tabs
+          // getSilentAssertion will handle this. If there is no prevIssuer,
+          // the user has no cert, and there is no problem.
+          info.issuerChange = !!prevIssuer;
+        }
+        else if (record.unverified && "unverified" !== info.state) {
+          // cert was created with an unverified email but the email
+          // is now verified... clear cert.
+          clearCert(email, record);
+        }
+        else if (isTransitioning(info.state)) {
+          // On a transition, issuer MUST have changed... clear cert
+          clearCert(email, record);
+        }
+        complete(done, info);
+      });
     },
 
     /**
@@ -1036,10 +1188,8 @@ BrowserID.User = (function() {
      */
     addEmail: function(email, password, onComplete, onFailure) {
       stageAddressVerification(email, password,
-        network.addSecondaryEmail.bind(network, email, password, origin),
-        function(status) {
-          complete(onComplete, status.success);
-        }, onFailure);
+        network.addSecondaryEmail.bind(network, email, password, User.rpInfo),
+          onComplete, onFailure);
     },
 
     /**
@@ -1051,16 +1201,9 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - Called on error.
      */
     passwordNeededToAddSecondaryEmail: function(onComplete, onFailure) {
-      var emails = storage.getEmails(),
-          passwordNeeded = true;
-
-      for(var key in emails) {
-        if(emails[key].type === "secondary") {
-          passwordNeeded = false;
-        }
-      }
-
-      complete(onComplete, passwordNeeded);
+      withContext(function(ctx) {
+        complete(onComplete, !ctx.has_password);
+      }, onFailure);
     },
 
     /**
@@ -1076,9 +1219,7 @@ BrowserID.User = (function() {
      * Cancel the waitForEmailValidation poll
      * @method cancelEmailValidation
      */
-    cancelEmailValidation: function() {
-      cancelRegistrationPoll();
-    },
+    cancelEmailValidation: cancelRegistrationPoll,
 
     /**
      * Verify a users email address given by the token
@@ -1100,12 +1241,11 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - Called on error.
      */
     removeEmail: function(email, onComplete, onFailure) {
-      if (storage.getEmail(email)) {
+      var issuer = User.rpInfo.getIssuer();
+      if (storage.getEmail(email, issuer)) {
         network.removeEmail(email, function() {
-          storage.removeEmail(email);
-          if (onComplete) {
-            onComplete();
-          }
+          storage.removeEmail(email, issuer);
+          complete(onComplete);
         }, onFailure);
       } else if (onComplete) {
         onComplete();
@@ -1117,27 +1257,27 @@ BrowserID.User = (function() {
      * server a keypair for the given email address.
      * @method syncEmailKeypair
      * @param {string} email - Email address.
-     * @param {string} [issuer] - Issuer of keypair.
      * @param {function} [onComplete] - Called on completion.  Called with
      * status parameter - true if successful, false otw.
      * @param {function} [onFailure] - Called on error.
      */
     syncEmailKeypair: function(email, onComplete, onFailure) {
-      prepareDeps();
       // jwcrypto depends on a random seed being set to generate a keypair.
-      // The seed is set with a call to network.withContext.  Ensure the
+      // The seed is set with a call to withContext.  Ensure the
       // random seed is set before continuing or else the seed may not be set,
       // the key never created, and the onComplete callback never called.
-      network.withContext(function() {
-        jwcrypto.generateKeypair({algorithm: "DS", keysize: bid.KEY_LENGTH}, function(err, keypair) {
-          certifyEmailKeypair(email, keypair, onComplete, onFailure);
+      withContext(function() {
+        cryptoLoader.load(function(jwcrypto) {
+          jwcrypto.generateKeypair({algorithm: "DS", keysize: bid.KEY_LENGTH}, function(err, keypair) {
+            certifyEmailKeypair(email, keypair, onComplete, onFailure);
+          });
         });
       });
     },
 
 
     /**
-     * Get an assertion for an identity
+     * Get an assertion for an identity, optionally backed by a specific issuer
      * @method getAssertion
      * @param {string} email - Email to get assertion for.
      * @param {string} audience - Audience to use for the assertion.
@@ -1145,61 +1285,77 @@ BrowserID.User = (function() {
      * @param {function} [onFailure] - Called on error.
      */
     getAssertion: function(email, audience, onComplete, onFailure) {
-      // we use the current time from the browserid servers
-      // to avoid issues with clock drift on user's machine.
-      // (issue #329)
-        function complete(status) {
-          onComplete && onComplete(status);
-        }
+      var issuer = User.rpInfo.getIssuer(),
+          storedID = storage.getEmail(email, issuer),
+          userAssertedClaims = User.rpInfo.getUserAssertedClaims() || {},
+          assertion;
 
-        var storedID = storage.getEmail(email),
-            assertion,
-            self=this;
-
-        function createAssertion(idInfo) {
-          network.serverTime(function(serverTime) {
+      function createAssertion(idInfo) {
+        // we use the current time from the browserid servers
+        // to avoid issues with clock drift on user's machine.
+        // (issue #329)
+        withContext(function(userContext, networkContext) {
+          var serverTime = networkContext.getServerTime();
+          cryptoLoader.load(function(jwcrypto) {
             var sk = jwcrypto.loadSecretKeyFromObject(idInfo.priv);
 
-            setTimeout(function() {
-              // assertions are valid for 2 minutes
-              var expirationMS = serverTime.getTime() + (2 * 60 * 1000);
-              var expirationDate = new Date(expirationMS);
+            // assertions are valid for 2 minutes
+            var expirationMS = serverTime.getTime() + (2 * 60 * 1000);
+            var expirationDate = new Date(expirationMS);
 
+            // yield to the render thread, important on IE8 so we don't
+            // raise "script has become unresponsive" errors.
+            setTimeout(function() {
               jwcrypto.assertion.sign(
-                {}, {audience: audience, expiresAt: expirationDate},
+                userAssertedClaims, {audience: audience, expiresAt: expirationDate},
                 sk,
                 function(err, signedAssertion) {
                   assertion = jwcrypto.cert.bundle([idInfo.cert], signedAssertion);
                   storage.site.set(audience, "email", email);
-                  complete(assertion);
+                  // issuer is used for B2G to get silent assertions to get
+                  // assertions backed by certs from a special issuer.
+                  storage.site.set(audience, "issuer", issuer);
+
+                  /**
+                   * If a user who signs with a primary address is not authenticated to Persona,
+                   * an assertion is first generated with the audience login.persona.org to sign the user
+                   * into Persona, another assertion is generated to sign the user into the RP. The cert should
+                   * be removed after generating the assertion for the RP.
+                   */
+                  if (audience !== PERSONA_ORG_AUDIENCE && !storage.usersComputer.confirmed(email)) {
+                    // If the user has not confirmed that this is their
+                    // computer, immediately invalidate the cert so that nobody
+                    // else can sign in using this address.
+                    storage.invalidateEmail(email);
+                  }
+                  complete(onComplete, assertion);
                 });
             }, 0);
-          }, onFailure);
-        }
+          });
+        }, onFailure);
+      }
 
-        if (storedID) {
-          prepareDeps();
-          if (storedID.priv) {
-            // parse the secret key
-            // yield to the render thread!
-            setTimeout(function() {
-              createAssertion(storedID);
-            }, 0);
-          }
-          else {
-            if (storedID.type === "primary") {
+      if (storedID) {
+        if (storedID.priv) {
+          // parse the secret key
+          // yield to the render thread!
+          setTimeout(function() {
+            createAssertion(storedID);
+          }, 0);
+        }
+        else {
+          User.addressInfo(email, function(info) {
+            if (info.type === "primary" && User.rpInfo.isDefaultIssuer()) {
               // first we have to get the address info, then attempt
               // a provision, then if the user is provisioned, go and get an
               // assertion.
-              User.addressInfo(email, function(info) {
-                User.provisionPrimaryUser(email, info, function(status) {
-                  if (status === "primary.verified") {
-                    User.getAssertion(email, audience, onComplete, onFailure);
-                  }
-                  else {
-                    complete(null);
-                  }
-                }, onFailure);
+              User.provisionPrimaryUser(email, info, function(status) {
+                if (status === "primary.verified") {
+                  User.getAssertion(email, audience, onComplete, onFailure);
+                }
+                else {
+                  complete(onComplete, null);
+                }
               }, onFailure);
             }
             else {
@@ -1209,11 +1365,12 @@ BrowserID.User = (function() {
                 User.getAssertion(email, audience, onComplete, onFailure);
               }, onFailure);
             }
-          }
+          }, onFailure);
         }
-        else {
-          complete(null);
-        }
+      }
+      else {
+        complete(onComplete, null);
+      }
     },
 
     /**
@@ -1222,7 +1379,7 @@ BrowserID.User = (function() {
      * @return {object} identities.
      */
     getStoredEmailKeypairs: function() {
-      return storage.getEmails();
+      return storage.getEmails(User.rpInfo.getIssuer());
     },
 
     /**
@@ -1235,7 +1392,7 @@ BrowserID.User = (function() {
           sortedIdentities = [];
 
       for(var key in identities) {
-        if(identities.hasOwnProperty(key)) {
+        if (identities.hasOwnProperty(key)) {
           sortedIdentities.push({ address: key, info: identities[key] });
         }
       }
@@ -1255,7 +1412,7 @@ BrowserID.User = (function() {
      * otw.
      */
     getStoredEmailKeypair: function(email) {
-      return storage.getEmail(email);
+      return storage.getEmail(email, User.rpInfo.getIssuer());
     },
 
     /**
@@ -1274,32 +1431,93 @@ BrowserID.User = (function() {
      * @param {function} onFailure - called on XHR failure.
      */
     getSilentAssertion: function(siteSpecifiedEmail, onComplete, onFailure) {
-      // XXX: why do we need to check authentication status here explicitly.
-      //      why can't we fail later?  the problem with doing this is that
-      //      knowing correct present authentication status requires that we
-      //      talk to the server, because you can be logged in or logged out
-      //      in many different contexts (dialog, manage page, cookies expire).
-      //      so if we rely on localstorage only and check authentication status
-      //      only when we know a network request will be required, we very well
-      //      might have fewer race conditions and do fewer network requests.
+      /**
+       * Here is everything I know about silent assertions.
+       *
+       * getSilentAssertion is used in both the communication_iframe and the
+       * internal_api to get assertions. Silent assertions drive the .watch
+       * API which in turn drives .get and .getVerifiedEmail.
+       *
+       * Silent assertions are supposed to be fetched under the following
+       * conditions (AND):
+       * 1) The user is signed in to Persona.
+       * 2) Persona believes the user is signed in to the current site.
+       * 3) The address in #2 is different to siteSpecifiedEmail. If the
+       *      addresses are the same, call onComplete with (email, null) to
+       *      specify "we agree with you"
+       * 4) The address in #2 is not in a transition state. If the address is
+       *      in a transition state, the user must go to the dialog to see
+       *      messaging and possibly verify their email address.
+       * 5) A cert must exist or be able to be created for the address in #2.
+       *      If a cert does not currently exist, try to fetch one from the
+       *      backing IdP. This allows an assertion to be generated for two
+       *      scenarios: a) a cert has expired but the IdP allows the user
+       *          to create one. b) a cert does not exist, but the IdP allows
+       *          the user to create one. Case b is used with
+       *          post-verification redirect and the .watch API.
+       *
+       * If any of the conditions are not met, call onComplete with a null
+       * assertion.
+       *
+       * There are 3 transition states:
+       * 1) transition_to_primary - an address that is marked as a "secondary"
+       *      is now backed by a primary IdP. The user should see messaging
+       *      that says they will authenticate with the IdP instead of
+       *      Persona.
+       * 2) transition_to_secondary - an address that is marked as a "primary"
+       *      no longer has primary IdP backing. It must be vouched for by
+       *      the fallback IdP. The user already has a Persona password.
+       *      The user should see messaging that explains to them they use
+       *      their Persona password, they then type their Persona password
+       *      and verify their ownership of the address via an email
+       *      verification.
+       * 3) transition_no_password - an address that is marked as a "primary"
+       *      no longer has primary IdP backing. It must be vouched for by
+       *      the fallback IdP. The user must set a Persona password. The user
+       *      should see messaging that explains to them they use their
+       *      Persona password for this address. The user sets a new password
+       *      and must verify their email address.
+       *
+       * In any transition state, the user has to see some messaging and
+       * possibly verify their email address. No assertion should be generated.
+       */
+      var rpInfo = User.rpInfo;
       User.checkAuthenticationAndSync(function(authenticated) {
-        if (authenticated) {
-          var loggedInEmail = storage.getLoggedIn(origin);
-          if (loggedInEmail !== siteSpecifiedEmail) {
-            if (loggedInEmail) {
-              User.getAssertion(loggedInEmail, origin, function(assertion) {
-                onComplete(assertion ? loggedInEmail : null, assertion);
-              }, onFailure);
-            } else {
-              onComplete(null, null);
-            }
-          } else {
-            onComplete(loggedInEmail, null);
+        var origin = rpInfo.getOrigin();
+        var loggedInEmail = storage.site.get(origin, "logged_in");
+        if (!loggedInEmail) {
+          loggedInEmail = storage.site.get(origin, "one_time");
+        }
+        // User is not signed in to Persona or not signed into the site.
+        if (!(authenticated && loggedInEmail))
+          return complete(onComplete, null, null);
+
+        User.resetCaches();
+        User.addressInfo(loggedInEmail, function(info) {
+          // If the address is in a transition state, the user must see
+          // messaging in the dialog before continuing.
+          if (isTransitioning(info.state))
+            return complete(onComplete, null, null);
+
+          // If there has not been an issuer change and Persona's view of the
+          // world agrees with the sites, then skip assertion generation.
+          if (( ! info.issuerChange)
+                  && (loggedInEmail === siteSpecifiedEmail)) {
+            return complete(onComplete, loggedInEmail, null);
           }
-        }
-        else if (onComplete) {
-          onComplete(null, null);
-        }
+
+          // Try to fetch an assertion. If a cert for the address exists or
+          // if one can be signed by the backing IdP, an assertion will be
+          // generated.
+          // If there has been an issuer change, this will check with the new
+          // issuer to make sure the user is authenticated there.
+          User.getAssertion(loggedInEmail, origin, function(assertion) {
+            if (assertion) {
+              storage.site.remove(origin, "one_time");
+            }
+            complete(onComplete, assertion ? loggedInEmail : null, assertion);
+          }, onFailure);
+        });
       }, onFailure);
     },
 
@@ -1311,36 +1529,16 @@ BrowserID.User = (function() {
      * @param {function} onFailure - called on XHR failure.
      */
     logout: function(onComplete, onFailure) {
+      var rpInfo = User.rpInfo;
       User.checkAuthentication(function(authenticated) {
         if (authenticated) {
-          storage.setLoggedIn(origin, false);
+          storage.site.remove(rpInfo.getOrigin(), "logged_in");
         }
 
         if (onComplete) {
           onComplete(!!authenticated);
         }
       }, onFailure);
-    },
-
-    /**
-     * Check if the user has any secondary addresses.
-     * @method hasSecondary
-     * @param {function} onComplete - called with true if user has at least one
-     * email address, false otw.
-     * @param {function} onFailure - called on XHR failure.
-     */
-    hasSecondary: function(onComplete, onFailure) {
-      var hasSecondary = false,
-          emails = storage.getEmails();
-
-      for(var key in emails) {
-        if(emails[key].type === "secondary") {
-          hasSecondary = true;
-          break;
-        }
-      }
-
-      onComplete(hasSecondary);
     },
 
     /**
@@ -1351,19 +1549,20 @@ BrowserID.User = (function() {
      * @param {function} onFailure - called on XHR failure.
      */
     setComputerOwnershipStatus: function(userOwnsComputer, onComplete, onFailure) {
-      var userID = network.userid();
-      if(typeof userID !== "undefined") {
-        if (userOwnsComputer) {
-          storage.usersComputer.setConfirmed(userID);
-          network.prolongSession(onComplete, onFailure);
+      withContext(function(context) {
+        if (context.isUserAuthenticated()) {
+          if (userOwnsComputer) {
+            storage.usersComputer.setConfirmed(context.getUserId());
+            network.prolongSession(onComplete, onFailure);
+          }
+          else {
+            storage.usersComputer.setDenied(context.getUserId());
+            complete(onComplete);
+          }
+        } else {
+          complete(onFailure, "user is not authenticated");
         }
-        else {
-          storage.usersComputer.setDenied(userID);
-          complete(onComplete);
-        }
-      } else {
-        complete(onFailure, "user is not authenticated");
-      }
+      }, onFailure);
     },
 
     /**
@@ -1371,12 +1570,13 @@ BrowserID.User = (function() {
      * @method isUsersComputer
      */
     isUsersComputer: function(onComplete, onFailure) {
-      var userID = network.userid();
-      if(typeof userID !== "undefined") {
-        complete(onComplete, storage.usersComputer.confirmed(userID));
-      } else {
-        complete(onFailure, "user is not authenticated");
-      }
+      withContext(function(context) {
+        if (context.isUserAuthenticated()) {
+          complete(onComplete, storage.usersComputer.confirmed(context.getUserId()));
+        } else {
+          complete(onFailure, "user is not authenticated");
+        }
+      }, onFailure);
     },
 
     /**
@@ -1384,29 +1584,32 @@ BrowserID.User = (function() {
      * @method shouldAskIfUsersComputer
      */
     shouldAskIfUsersComputer: function(onComplete, onFailure) {
-      var userID = network.userid();
-      if(typeof userID !== "undefined") {
-        // A user should never be asked if they completed an email
-        // registration/validation in this dialog session.
-        var shouldAsk = storage.usersComputer.shouldAsk(userID)
-                        && !registrationComplete;
-        complete(onComplete, shouldAsk);
-      } else {
-        complete(onFailure, "user is not authenticated");
-      }
+      withContext(function(context) {
+        if (context.isUserAuthenticated()) {
+          // A user should never be asked if they completed an email
+          // registration/validation in this dialog session.
+          var shouldAsk = storage.usersComputer.shouldAsk(context.getUserId())
+                          && !registrationComplete;
+          complete(onComplete, shouldAsk);
+        } else {
+          complete(onFailure, "user is not authenticated");
+        }
+      }, onFailure);
+    },
+
+    /**
+     * Mark the transition state of this user as having been completed.
+     * @method usedAddressAsPrimary
+     */
+    usedAddressAsPrimary: function(email, onComplete, onFailure) {
+      User.checkAuthentication(function(authenticated) {
+        if (authenticated) {
+          network.usedAddressAsPrimary(email, onComplete, onFailure);
+        }
+        else complete(onFailure, "user is not authenticated");
+      }, onFailure);
     }
-
   };
-
-  // Set origin to default to the current domain.  Other contexts that use user.js,
-  // like dialogs or iframes, will call setOrigin themselves to update this to
-  // the origin of the of the RP.  On login.persona.org, it will remain the origin of
-  // login.persona.org
-  var currentOrigin = window.location.protocol + '//' + window.location.hostname;
-  if (window.location.port) {
-    currentOrigin += ':' + window.location.port;
-  }
-  User.setOrigin(currentOrigin);
 
   return User;
 }());

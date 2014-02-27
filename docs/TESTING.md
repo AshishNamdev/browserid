@@ -31,7 +31,7 @@ Running tests with `npm test` will use a json database by default.  To
 test using MySQL, you will need to grant `browserid` privileges to
 create tables.  You can then run the mysql suite with, e.g.,
 
-```bash
+```sh
 NODE_ENV=test_mysql MYSQL_USER=browserid MYSQL_PASSWORD=browserid npm test
 ```
 
@@ -50,17 +50,20 @@ If you need to reset the MySQL root password on a Debian system, you'll need to 
 
 ### Test Suites
 
-There are two test suites:
+There are three test suites:
 
 - `back`
+- `back_mysql`
 - `front`
 
 By default the test runner will run them all. You can limit it to one
 suite by setting `WHAT_TESTS` in your environment.  For example:
 
-```bash
+```sh
 WHAT_TESTS=front npm test
 ```
+
+`WHAT_TESTS` defaults to `all`, which runs... them all.
 
 The front-end tests are run via PhantomJS.
 
@@ -70,6 +73,33 @@ As in the web tests, you can tell the runner to run only tests whose
 modules match a given name.  Specify this in your environment with
 `FRONTEND_TEST_FILTER`.  For example:
 
-```bash
+```sh
 WHAT_TESTS=front FRONTEND_TEST_FILTER=shared/user npm test
 ```
+
+## Manual testing
+
+If you want to do manual tests using an RP that points to your
+development copy of browserid, simply load `http://127.0.0.1:10002/include.js`
+instead of `https://login.persona.org/include.js`.
+
+Then make sure that mixed content blocking is **disabled**
+(`security.mixed_content.block_active_content = false` in Firefox)
+and use an email provider that won't trigger origin mismatch problems:
+
+* `mockmyid.com`
+* `eyedee.me`
+* any other one that is not bridged and lacks native support for Persona
+
+## Adding Tests
+
+### Front-end
+
+New frontend tests should be added to `resources/static/test/cases/`.
+Many tests have the exact same filename, except with /test/cases/.
+
+Example: resources/static/common/js/foo.js would be tested in 
+resources/static/test/cases/common/js/foo.js.
+
+Adding files requires that you edit `resources/views/test.ejs` and add
+your test as well as any new dependent files.

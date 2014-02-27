@@ -8,6 +8,8 @@
       mediator = bid.Mediator,
       State = bid.State,
       user = bid.User,
+      RpInfo = bid.Models.RpInfo,
+      moduleManager = bid.module,
       machine,
       actions,
       network = bid.Network,
@@ -22,7 +24,7 @@
   };
   ActionsMock.prototype = {};
   for(var key in bid.Modules.Actions.prototype) {
-    if(bid.Modules.Actions.prototype.hasOwnProperty(key)) {
+    if (bid.Modules.Actions.prototype.hasOwnProperty(key)) {
       ActionsMock.prototype[key] = (function(key) {
         return function(info) {
           this.called[key] = true;
@@ -31,7 +33,7 @@
       }(key));
       ActionsMock.prototype.reset = function() {
         for(var key in ActionsMock.prototype) {
-          if(bid.Modules.Actions.prototype.hasOwnProperty(key)) {
+          if (bid.Modules.Actions.prototype.hasOwnProperty(key)) {
             delete this.called[key];
             delete this.info[key];
           }
@@ -42,14 +44,36 @@
 
   function testActionStarted(actionName, requiredOptions) {
     ok(actions.called[actionName], actionName + " called");
+    if (!actions.called[actionName]) {
+       console.error("Actions started: "
+          + JSON.stringify(actions.called, null, 2));
+    }
+
     for(var key in requiredOptions) {
+      ok(actions.info[actionName], "Expected actions.info to have [" + actionName + "]");
       equal(actions.info[actionName][key], requiredOptions[key],
           actionName + " called with " + key + "=" + requiredOptions[key]);
     }
   }
 
+  function testPasswordUsedForStaging(stagingMessage, stagingAction) {
+    mediator.publish(stagingMessage, {
+      email: TEST_EMAIL,
+      complete: function() {
+        testActionStarted("doSetPassword");
+        mediator.publish("password_set", {
+          complete: function() {
+            equal(actions.info[stagingAction].email, TEST_EMAIL,
+                      "correct email sent to " + stagingAction);
+            start();
+          }
+        });
+      }
+    });
+  }
+
   function testStagingThrottledRetry(startMessage, expectedStagingAction) {
-    mediator.publish(startMessage, { email: TEST_EMAIL, complete: function() {
+    mediator.publish(startMessage, { email: TEST_EMAIL, type: "secondary", complete: function() {
         mediator.publish("password_set");
         actions.reset();
 
@@ -60,24 +84,35 @@
     });
   }
 
-  function testVerifyStagedAddress(startMessage, confirmationMessage, verifyScreenAction) {
+  function testVerifyStagedAddress(stagedMessage, stagedAction, confirmationMessage, mustAuth) {
     // start with a site name to ensure the site name is passed to the
     // verifyScreenAction.
-    mediator.publish("start", { siteName: "Unit Test Site" });
-    mediator.publish(startMessage, {
+    var rpInfo = RpInfo.create({
+      origin: "https://testuser.com",
+      siteName: "Unit Test Site"
+    });
+    user.setRpInfo(rpInfo);
+    mediator.publish("start", { rpInfo: rpInfo });
+    mediator.publish(stagedMessage, {
       email: TEST_EMAIL
     });
 
-    testActionStarted(verifyScreenAction, {
+    testActionStarted(stagedAction, {
       email: TEST_EMAIL,
-      siteName: "Unit Test Site"
+      rpInfo: rpInfo
     });
 
     // At this point the user should be displayed the "go confirm your address"
     // screen.  Simulate the user completing the verification transaction.
+    //
+    // There are two possibilities here, first, the user must authenticate. If
+    // the user must authenticate, send them to the
+    // authenticate screen. If the user is already authenticated, call
+    // email_valid_and_ready so that an assertion is generated.
 
-    mediator.subscribe("email_chosen", function(msg, info) {
-      equal(info.email, TEST_EMAIL, "email_chosen triggered with the correct email");
+    var expectedMessage = mustAuth ? "authenticate" : "email_valid_and_ready";
+    mediator.subscribe(expectedMessage, function(msg, info) {
+      equal(info.email, TEST_EMAIL, expectedMessage + " triggered with the correct email");
       start();
     });
 
@@ -85,10 +120,9 @@
     // has received the "complete" message from the polling function, and all
     // addresses are synced.  Add the test email and make sure the email_chosen
     // message is triggered.
-    storage.addSecondaryEmail(TEST_EMAIL, { unverified: true });
-    mediator.publish(confirmationMessage);
+    storage.addEmail(TEST_EMAIL);
+    mediator.publish(confirmationMessage, { mustAuth: mustAuth });
   }
-
 
   function createMachine() {
     machine = bid.State.create();
@@ -96,14 +130,14 @@
     machine.start({controller: actions});
   }
 
-  function setContextInfo(auth_status) {
+  function setContextInfo(auth_level) {
     // Make sure there is context info for network.
     var serverTime = (new Date().getTime()) - 10;
-    mediator.publish("context_info", {
+    network.setContext({
       server_time: serverTime,
       domain_key_creation_time: serverTime,
       code_version: "ABCDEF",
-      auth_status: auth_status || "password",
+      auth_level: auth_level || "password",
       userid: 1,
       random_seed: "ABCDEFGH"
     });
@@ -113,6 +147,13 @@
     setup: function() {
       testHelpers.setup();
       createMachine();
+
+      // trigger the start message before every test to initialize rpInfo. If
+      // the test needs its own rpInfo, it will re-call start with the
+      // parameters for the test.
+      mediator.publish("start", {
+        rpInfo: RpInfo.create({ origin: "https://testuser.com" })
+      });
     },
 
     teardown: function() {
@@ -134,6 +175,127 @@
     equal(error.message, "start: controller must be specified", "creating a state machine without a controller fails");
   });
 
+
+  // This table defines a way to programatically run through the "stage
+  // a secondary address" flows through to the user verifying their ownership
+  // of the address.
+  //
+  // Keys are:
+  //   stage: the message that causes a stage action to be started
+  //   stageAction: the expected stage action to be called upon stage message.
+  //   staged: the message that is triggered when an address is staged.
+  //   stagedAction: the action that should be called when an address is
+  //                        staged. The user goes to the "check your email"
+  //                        screen.
+  //   confirmed: the message that is triggered when an address is confirmed.
+  //
+  var stageAddressTests = [ {
+      stage_with_password: "new_user",
+      stageAction: "doStageUser",
+      staged: "user_staged",
+      stagedAction: "doConfirmUser",
+      confirmed: "user_confirmed"
+    },
+    {
+      stage_with_password: "stage_email",
+      stageAction: "doStageEmail",
+      staged: "email_staged",
+      stagedAction: "doConfirmEmail",
+      confirmed: "email_confirmed"
+    },
+    {
+      stage: "forgot_password",
+      stageAction: "doStageResetPassword",
+      staged: "reset_password_staged",
+      stagedAction: "doConfirmResetPassword",
+      confirmed: "reset_password_confirmed"
+    },
+    {
+      stage: "stage_reverify_email",
+      stageAction: "doStageReverifyEmail",
+      staged: "reverify_email_staged",
+      stagedAction: "doConfirmReverifyEmail",
+      confirmed: "reverify_email_confirmed"
+    },
+    {
+      stage_with_password: "transition_no_password",
+      stageAction: "doStageTransitionToSecondary",
+      staged: "transition_to_secondary_staged",
+      stagedAction: "doConfirmTransitionToSecondary",
+      confirmed: "transition_to_secondary_confirmed"
+    }
+  ];
+
+  for (var i = 0, stageAddressTest; stageAddressTest = stageAddressTests[i]; ++i) {
+      var testName;
+
+      if (stageAddressTest.stage_with_password && stageAddressTest.stageAction) {
+        // simulate a staging that requires a password. First, the user goes to
+        // the set password screen, the password is subitted, and then the
+        // stage action is called.
+        testName = "staging process for "
+                       + stageAddressTest.stage_with_password
+                       + " through password_set - call " + stageAddressTest.stageAction;
+
+        asyncTest(testName,
+          testPasswordUsedForStaging.curry(stageAddressTest.stage_with_password,
+              stageAddressTest.stageAction));
+
+
+        // simulate throttling. The user stays at the current screen.
+        testName = "simulate throttling for "
+                      + stageAddressTest.stage_with_password
+                      + " go back to " + stageAddressTest.stageAction;
+
+        asyncTest(testName, testStagingThrottledRetry.curry(
+              stageAddressTest.stage_with_password,
+              stageAddressTest.stageAction));
+      }
+
+      // First test whether stage_XXX messages call the correct action.
+      // Only do this test if there is a stage and stageAction defined
+      if (stageAddressTest.stage && stageAddressTest.stageAction) {
+        testName = stageAddressTest.stage + " - call " + stageAddressTest.stageAction;
+
+        test(testName, function(stageMessage, stageAction) {
+          mediator.publish(stageMessage, { email: TEST_EMAIL });
+          testActionStarted(stageAction, { email: TEST_EMAIL });
+        }.curry(stageAddressTest.stage, stageAddressTest.stageAction));
+      }
+
+
+      // Test the flow from "address staged" which shows the "check your email"
+      // screen, simulating a user confirming ownership. The "email_confirmed"
+      // message should be triggered.
+      testName = stageAddressTest.staged + " to "
+                    + stageAddressTest.stagedAction
+                    + ", simulate "
+                    + stageAddressTest.confirmed
+                    + " expects email_confirmed";
+
+      asyncTest(testName, testVerifyStagedAddress.curry(
+              stageAddressTest.staged,
+              stageAddressTest.stagedAction,
+              stageAddressTest.confirmed,
+              false));
+
+      // Test the flow from "address staged" which shows the "check your email"
+      // screen, simulating a user confirming ownership but must authenticate
+      // in the dialog. The "authenticate" message should be
+      // triggered.
+      testName = stageAddressTest.staged + " to " + stageAddressTest.confirmed +
+          " with mustAuth - redirect to authenticate";
+
+      asyncTest(testName, testVerifyStagedAddress.curry(
+              stageAddressTest.staged,
+              stageAddressTest.stagedAction,
+              stageAddressTest.confirmed,
+              true));
+  }
+
+
+
+
   test("cancel post new_user password_set flow - go back to the authentication screen", function() {
     mediator.publish("authenticate");
     mediator.publish("new_user", { email: TEST_EMAIL}, { email: TEST_EMAIL });
@@ -143,95 +305,20 @@
     equal(actions.info.doAuthenticate.email, TEST_EMAIL, "authenticate called with the correct email");
   });
 
-  test("cancel new_user password_set flow, then forgot_password, password_set - email sent to forgot password email address", function() {
-    // This comes from issue #2231
-    // * Sign in (e.g. at http://translate.123done.org) with a wrong email adress (for example mistyped).
-    // * Click cancel
-    // * Enter your correct email (from an existing account)
-    // * Click 'Forgot your password?'
-    // * Enter a new password and send the form
-    //
-    //
-    //
-    // User types in an incorrect email address, the address is unknown to
-    // Persona who treats it as a new user.
-    mediator.publish("authenticate");
-    mediator.publish("new_user", { email: "incorrect@testuser.com" });
-    // The user is now looking at the set_password screen, they cancel out.
-    mediator.publish("cancel_state");
-    // The user has entered the correct email address but has forgot their
-    // password.
-    mediator.publish("forgot_password", { email: TEST_EMAIL });
-    // The user sets the password for the correct account.
-    mediator.publish("password_set");
-    // The email should be sent to the email specified in forgot_password
-    testActionStarted("doStageResetPassword", { email: TEST_EMAIL });
-  });
-
-
-  test("password_set for new user - call doStageUser with correct email", function() {
-    mediator.publish("new_user", { email: TEST_EMAIL });
-    mediator.publish("password_set");
-
-    equal(actions.info.doStageUser.email, TEST_EMAIL, "correct email sent to doStageUser");
-  });
-
-  asyncTest("multiple calls to password_set for new_user, simulate throttling - call doStageUser with correct email for each", function() {
-    testStagingThrottledRetry("new_user", "doStageUser");
-  });
-
-  test("password_set for add secondary email - call doStageEmail with correct email", function() {
-    mediator.publish("stage_email", { email: TEST_EMAIL });
-    mediator.publish("password_set");
-
-    equal(actions.info.doStageEmail.email, TEST_EMAIL, "correct email sent to doStageEmail");
-  });
-
-  test("password_set for reset password - call doStageResetPassword with correct email", function() {
-    mediator.publish("forgot_password", { email: TEST_EMAIL });
-    mediator.publish("password_set");
-
-    equal(actions.info.doStageResetPassword.email, TEST_EMAIL, "correct email sent to doStageResetPassword");
-  });
-
-  test("start - RPInfo always started", function() {
-    mediator.publish("start", {
-      termsOfService: "https://browserid.org/TOS.html",
-      privacyPolicy: "https://browserid.org/priv.html"
-    });
-
-    ok(actions.info.doRPInfo.termsOfService, "doRPInfo called with termsOfService set");
-    ok(actions.info.doRPInfo.privacyPolicy, "doRPInfo called with privacyPolicy set");
-  });
-
-  asyncTest("user_staged to user_confirmed - call doConfirmUser", function() {
-    testVerifyStagedAddress("user_staged", "user_confirmed", "doConfirmUser");
-  });
-
-  asyncTest("user_confirmed - redirect to email_chosen", function() {
-    mediator.subscribe("email_chosen", function(msg, info) {
-      equal(info.email, TEST_EMAIL, "correct email passed");
-      start();
-    });
-
-    // simulate the flow of a user being staged through to confirmation. Since
-    // we are not actually doing the middle bits and saving off a cert for the
-    // email address, we get an invalid email exception thrown.
-    storage.addSecondaryEmail(TEST_EMAIL);
-    mediator.publish("user_staged", { email: TEST_EMAIL });
+  test("start - RPInfo always started, inline_tosspp not started", function() {
     try {
-      mediator.publish("user_confirmed");
+      mediator.publish("start", {
+        rpInfo: RpInfo.create({ origin: "https://testuser.com" }),
+      });
     } catch(e) {
-      equal(e.message, "invalid email", "expected failure");
+      ok(false, "exception not expected");
     }
-  });
 
-  asyncTest("email_staged to email_confirmed - call doConfirmEmail", function() {
-    testVerifyStagedAddress("email_staged", "email_confirmed", "doConfirmEmail");
+    ok(actions.info.doRPInfo.rpInfo, "doRPInfo called with rpInfo set");
   });
 
   asyncTest("primary_user with already provisioned primary user - redirect to primary_user_ready", function() {
-    storage.addEmail(TEST_EMAIL, { type: "primary", cert: "cert" });
+    storage.addEmail(TEST_EMAIL, { cert: "cert" });
     mediator.subscribe("primary_user_ready", function(msg, info) {
       equal(info.email, TEST_EMAIL, "primary_user_ready triggered with correct email");
       start();
@@ -254,42 +341,74 @@
   });
 
   test("primary_user_unauthenticated before verification - call doVerifyPrimaryUser", function() {
-    mediator.publish("start");
     mediator.publish("primary_user_unauthenticated");
     ok(actions.called.doVerifyPrimaryUser, "doVerifyPrimaryUser called");
   });
 
-  test("primary_user_unauthenticated after verification of new user - call doAuthenticate", function() {
-    mediator.publish("start", { email: TEST_EMAIL, type: "primary", add: false });
-    mediator.publish("primary_user_unauthenticated");
-    ok(actions.called.doAuthenticate, "doAuthenticate called");
+  asyncTest("primary_user_unauthenticated after user cancelled " +
+        "verification of new user - call doAuthenticate", function() {
+    mediator.publish("start", {
+      rpInfo: RpInfo.create({ origin: "https://testuser.com" }),
+      email: TEST_EMAIL,
+      type: "primary",
+      add: false,
+      cancelled: true
+    });
+    mediator.publish("primary_user_unauthenticated", {
+      complete: function() {
+        ok(actions.called.doAuthenticate, "doAuthenticate called");
+        start();
+      }
+    });
   });
 
-  test("primary_user_unauthenticated after verification of additional email to current user - call doPickEmail and doAddEmail", function() {
-    mediator.publish("start", { email: TEST_EMAIL, type: "primary", add: true });
-    mediator.publish("primary_user_unauthenticated");
-    ok(actions.called.doPickEmail, "doPickEmail called");
-    ok(actions.called.doAddEmail, "doAddEmail called");
+  asyncTest("primary_user_unauthenticated after user cancelled " +
+      "verification of additional email to current user - " +
+      "call doPickEmail and doAddEmail", function() {
+    mediator.publish("start", {
+      rpInfo: RpInfo.create({ origin: "https://testuser.com" }),
+      email: TEST_EMAIL,
+      type: "primary",
+      add: true,
+      cancelled: true
+    });
+    mediator.publish("primary_user_unauthenticated", {
+      complete: function() {
+        ok(actions.called.doPickEmail, "doPickEmail called");
+        ok(actions.called.doAddEmail, "doAddEmail called");
+        start();
+      }
+    });
+  });
+
+  asyncTest("primary_user_unauthenticated, no user cancel - " +
+      " - call doPrimaryUserNotProvisioned", function() {
+    mediator.publish("start", {
+      rpInfo: RpInfo.create({ origin: "https://testuser.com" }),
+      email: TEST_EMAIL,
+      type: "primary",
+      cancelled: false
+    });
+    mediator.publish("primary_user_unauthenticated", {
+      complete: function() {
+        ok(actions.called.doPrimaryUserNotProvisioned);
+        start();
+      }
+    });
   });
 
   test("primary_user_authenticating stops all modules", function() {
-    try {
-      mediator.publish("primary_user_authenticating");
-
-      equal(machine.success, true, "success flag set");
-    } catch(e) {
-      // ignore exception, it tries shutting down all the modules.
-    }
+    mediator.publish("primary_user_authenticating");
+    equal(machine.success, true, "success flag set");
   });
 
   test("primary_user - call doProvisionPrimaryUser", function() {
     mediator.publish("primary_user", { email: TEST_EMAIL, assertion: "assertion" });
-
     ok(actions.called.doProvisionPrimaryUser, "doProvisionPrimaryUser called");
   });
 
   asyncTest("primary_user_ready - redirect to `email_chosen`", function() {
-    storage.addEmail(TEST_EMAIL, {});
+    storage.addEmail(TEST_EMAIL);
     mediator.subscribe("email_chosen", function(msg, info) {
       equal(info.email, TEST_EMAIL, "correct email passed");
       start();
@@ -300,7 +419,7 @@
   });
 
   asyncTest("authenticated - redirect to `email_chosen`", function() {
-    storage.addEmail(TEST_EMAIL, {});
+    storage.addEmail(TEST_EMAIL);
     mediator.subscribe("email_chosen", function(msg, data) {
       equal(data.email, TEST_EMAIL);
       start();
@@ -308,25 +427,12 @@
     mediator.publish("authenticated", { email: TEST_EMAIL });
   });
 
-  test("forgot_password - call doResetPassword with correct options", function() {
-    mediator.publish("start", { privacyPolicy: "priv.html", termsOfService: "tos.html" });
-    mediator.publish("forgot_password", {
-      email: TEST_EMAIL
-    });
-    testActionStarted("doResetPassword", { email: TEST_EMAIL });
-  });
-
-  asyncTest("multiple calls to password_set for forgot_password, simulate throttling - call doStageResetPassword with correct email for each", function() {
-    testStagingThrottledRetry("forgot_password", "doStageResetPassword");
-  });
-
-
-  asyncTest("reset_password_staged to reset_password_confirmed - call doConfirmResetPassword then doEmailConfirmed", function() {
-    testVerifyStagedAddress("reset_password_staged", "reset_password_confirmed", "doConfirmResetPassword");
-  });
-
-
   asyncTest("assertion_generated with null assertion - redirect to pick_email", function() {
+    mediator.subscribe("kpi_data", function() {
+      // kpi_data should not be called with a null assertion.
+      ok(false);
+    });
+
     mediator.subscribe("pick_email", function() {
       ok(true, "redirect to pick_email");
       start();
@@ -336,29 +442,43 @@
     });
   });
 
-  test("assertion_generated with assertion - doAssertionGenerated called", function() {
+  test("assertion_generated with assertion - doCompleteSignIn called", function() {
     setContextInfo("password");
-    storage.addEmail(TEST_EMAIL, {});
+    storage.addEmail(TEST_EMAIL);
+
+    mediator.subscribe("kpi_data", function(msg, info) {
+      // woohoo! an assertion was generated and the dialog is no longer
+      // considered orphaned!
+      equal(info.orphaned, false);
+    });
+
+    mediator.publish("email_chosen", {
+      email: TEST_EMAIL
+    });
     mediator.publish("assertion_generated", {
       assertion: "assertion"
     });
 
-    equal(actions.info.doAssertionGenerated.assertion, "assertion",
-        "doAssertionGenerated called with assertion");
+    testActionStarted("doCompleteSignIn", {
+      email: TEST_EMAIL,
+      assertion: "assertion"
+    });
   });
 
 
 
   asyncTest("email_valid_and_ready, need to ask user whether it's their computer - redirect to is_this_your_computer", function() {
     setContextInfo("password");
-    storage.usersComputer.forceAsk(network.userid());
-    mediator.subscribe("is_this_your_computer", function() {
-      ok(true, "redirect to is_this_your_computer");
-      start();
-    });
+    user.userid(function(userid) {
+      storage.usersComputer.forceAsk(userid);
+      mediator.subscribe("is_this_your_computer", function() {
+        ok(true, "redirect to is_this_your_computer");
+        start();
+      });
 
-    mediator.publish("email_valid_and_ready", {
-      assertion: "assertion"
+      mediator.publish("email_valid_and_ready", {
+        assertion: "assertion"
+      });
     });
   });
 
@@ -366,29 +486,12 @@
     setContextInfo("password");
     // First, set up the context info for the email.
 
-    storage.addEmail(TEST_EMAIL, {});
+    storage.addEmail(TEST_EMAIL);
     mediator.subscribe("generate_assertion", function() {
       ok(true, "redirect to generate_assertion");
       start();
     });
     mediator.publish("email_valid_and_ready", { email: TEST_EMAIL });
-  });
-
-  asyncTest("email_confirmed", function() {
-    mediator.subscribe("email_chosen", function(msg, info) {
-      equal(info.email, TEST_EMAIL, "correct email passed");
-      start();
-    });
-    storage.addSecondaryEmail(TEST_EMAIL);
-    mediator.publish("email_staged", { email: TEST_EMAIL });
-    // simulate the flow of a user being staged through to confirmation. Since
-    // we are not actually doing the middle bits and saving off a cert for the
-    // email address, we get an invalid email exception thrown.
-    try {
-      mediator.publish("email_confirmed");
-    } catch(e) {
-      equal(e.message, "invalid email", "expected failure");
-    }
   });
 
   test("cancel_state goes back to previous state if available", function() {
@@ -407,15 +510,22 @@
     ok(actions.called.doNotMe, "doNotMe has been called");
   });
 
-  test("authenticate - call doAuthenticate with the correct options", function() {
-    mediator.publish("start", { privacyPolicy: "priv.html", termsOfService: "tos.html" });
-    mediator.publish("authenticate", { email: TEST_EMAIL });
+  test("authenticate - call doAuthenticate with rpInfo", function() {
+    var rpInfo = RpInfo.create({
+                    origin: "https://testuser.com",
+                    emailHint: "testuser@testuser.com",
+                    privacyPolicy: "priv.html",
+                    termsOfService: "tos.html" })
+    mediator.publish("start", { rpInfo: rpInfo });
 
-    testActionStarted("doAuthenticate", { email: TEST_EMAIL, siteTOSPP: true });
+    mediator.publish("authenticate", { email: TEST_EMAIL });
+    testActionStarted("doAuthenticate", { email: TEST_EMAIL, rpInfo: rpInfo });
   });
 
   test("start with no special parameters - go straight to checking auth", function() {
-    mediator.publish("start");
+    mediator.publish("start", {
+      rpInfo: RpInfo.create({ origin: "https://testuser.com" })
+    });
 
     equal(actions.called.doCheckAuth, true, "checking auth on start");
   });
@@ -427,7 +537,12 @@
       start();
     });
 
-    mediator.publish("start", { email: TEST_EMAIL, type: "primary", add: true });
+    mediator.publish("start", {
+      rpInfo: RpInfo.create({ origin: "https://testuser.com" }),
+      email: TEST_EMAIL,
+      type: "primary",
+      add: true
+    });
   });
 
   test("cancel", function() {
@@ -437,43 +552,103 @@
   });
 
 
-  test("add_email - call doAddEmail with correct options", function() {
-    mediator.publish("start", { privacyPolicy: "priv.html", termsOfService: "tos.html" });
-    mediator.publish("add_email");
-    testActionStarted("doAddEmail");
-  });
-
-  asyncTest("email_chosen with verified secondary email, user must authenticate - call doAuthenticateWithRequiredEmail", function() {
-    storage.addSecondaryEmail(TEST_EMAIL, { verified: true });
+  asyncTest("email_chosen with verified secondary email, user must authenticate - call doAuthenticate", function() {
+    storage.addEmail(TEST_EMAIL);
 
     xhr.setContextInfo("auth_level", "assertion");
 
-    mediator.publish("start", { privacyPolicy: "priv.html", termsOfService: "tos.html" });
     mediator.publish("email_chosen", {
       email: TEST_EMAIL,
       complete: function() {
-        testActionStarted("doAuthenticateWithRequiredEmail", { siteTOSPP: false });
+        testActionStarted("doAuthenticate", {
+          email: TEST_EMAIL,
+          email_mutable: false
+        });
         start();
       }
     });
   });
 
   asyncTest("email_chosen with verified secondary email, user authenticated to secondary - redirect to email_valid_and_ready", function() {
-    storage.addSecondaryEmail(TEST_EMAIL, { verified: true });
+    storage.addEmail(TEST_EMAIL);
     xhr.setContextInfo("auth_level", "password");
 
     mediator.subscribe("email_valid_and_ready", function(msg, info) {
       equal(info.email, TEST_EMAIL, "correctly redirected to email_valid_and_ready with correct email");
       start();
     });
-
     mediator.publish("email_chosen", {
       email: TEST_EMAIL
     });
   });
 
+  asyncTest("email_chosen, transition_to_secondary w/o password given - " +
+      "this is a user who selected an address in transition from the email picker - " +
+      "password needed to stage transition - go to doAuthenticate",
+      function () {
+    storage.addEmail(TEST_EMAIL);
+    xhr.useResult("secondaryTransition");
+    mediator.publish("email_chosen", {
+      email: TEST_EMAIL,
+      complete: function() {
+        testActionStarted("doAuthenticate", {
+          email: TEST_EMAIL,
+          email_mutable: false
+        });
+        start();
+      }
+    });
+  });
+
+  asyncTest("email_chosen, transition_to_secondary w/ password given - " +
+      "this is a user who entered an address in transition from the authentication screen - " +
+      "password already known to stage transition - go to doStageTransitionToSecondary",
+      function () {
+    storage.addEmail(TEST_EMAIL);
+    xhr.useResult("secondaryTransition");
+    mediator.publish("email_chosen", {
+      email: TEST_EMAIL,
+      password: "password",
+      complete: function() {
+        testActionStarted("doStageTransitionToSecondary", {
+          email: TEST_EMAIL,
+          password: "password"
+        });
+        start();
+      }
+    });
+  });
+
+  asyncTest("email_chosen with secondary email, transition_no_password", function () {
+    storage.addEmail(TEST_EMAIL);
+    xhr.useResult("secondaryTransitionPassword");
+    mediator.publish("email_chosen", {
+      email: TEST_EMAIL,
+      complete: function() {
+        equal(actions.called.doSetPassword, true, "doSetPassword called");
+        mediator.publish("password_set");
+        testActionStarted("doStageTransitionToSecondary", {
+          email: TEST_EMAIL
+        });
+        start();
+      }
+    });
+  });
+
+  asyncTest("email_chosen with secondary email that is transitioned to a primary, call doVerifyPrimaryUser", function () {
+    storage.addEmail(TEST_EMAIL);
+    xhr.useResult("primaryTransition");
+    mediator.publish("email_chosen", {
+      email: TEST_EMAIL,
+      complete: function() {
+        ok(actions.called.doVerifyPrimaryUser);
+        start();
+      }
+    });
+  });
+
   function testReverifyEmailChosen(auth_level) {
-    storage.addSecondaryEmail(TEST_EMAIL, { verified: false });
+    storage.addEmail(TEST_EMAIL);
     xhr.setContextInfo("auth_level", auth_level);
 
     mediator.subscribe("stage_reverify_email", function(msg, info) {
@@ -481,6 +656,7 @@
       start();
     });
 
+    xhr.useResult("unverified");
     mediator.publish("email_chosen", {
       email: TEST_EMAIL
     });
@@ -494,19 +670,62 @@
     testReverifyEmailChosen("assertion");
   });
 
-  test("email_chosen with primary email - call doProvisionPrimaryUser", function() {
+  asyncTest("email_chosen with online primary email - call doProvisionPrimaryUser", function() {
     // If the email is a primary, throw the user down the primary flow.
     // Doing so will catch cases where the primary certificate is expired
     // and the user must re-verify with their IdP. This flow will
     // generate its own assertion when ready.  For efficiency, we could
     // check here whether the cert is ready, but it is early days yet and
     // the format may change.
-    var email = TEST_EMAIL;
-    storage.addEmail(email, { type: "primary" });
-    mediator.publish("email_chosen", { email: email });
-
-    equal(actions.called.doProvisionPrimaryUser, true, "doProvisionPrimaryUser called");
+    storage.addEmail(TEST_EMAIL);
+    xhr.useResult("primary");
+    mediator.publish("email_chosen", {
+      email: TEST_EMAIL,
+      complete: function() {
+        equal(actions.called.doProvisionPrimaryUser, true,
+            "doProvisionPrimaryUser called");
+        start();
+      }
+    });
   });
+
+  asyncTest("email_chosen with offline primary email - transition to primary_offline", function() {
+    storage.addEmail(TEST_EMAIL);
+    xhr.useResult("primaryOffline");
+    mediator.subscribe("primary_offline", function(msg, info) {
+      equal(info.email, TEST_EMAIL);
+      start();
+    });
+    mediator.publish("email_chosen", {
+      email: TEST_EMAIL
+    });
+  });
+
+  asyncTest("email_chosen with address in transition_to_primary state - " +
+                " call doVerifyPrimaryUser with correct info", function() {
+
+    var rpInfo = RpInfo.create({
+      origin: "https://testuser.com",
+      siteName: "Unit Test Site"
+    });
+    user.setRpInfo(rpInfo);
+    mediator.publish("start", { rpInfo: rpInfo });
+
+    xhr.useResult("primaryTransition");
+    mediator.publish("email_chosen", {
+      email: TEST_EMAIL,
+      allow_new_record: true,
+      complete: function() {
+        testActionStarted("doVerifyPrimaryUser", {
+          email: TEST_EMAIL,
+          rpInfo: rpInfo
+        });
+        start();
+      }
+    });
+
+  });
+
 
   test("email_chosen with invalid email - throw exception", function() {
     var email = TEST_EMAIL,
@@ -522,16 +741,16 @@
   });
 
   test("null assertion generated - preserve original options in doPickEmail", function() {
+    var rpInfo = RpInfo.create({ origin: "http://example.com" });
     mediator.publish("start", {
-      hostname: "http://example.com",
-      privacyPolicy: "http://example.com/priv.html",
-      termsOfService: "http://example.com/tos.html"
+      rpInfo: rpInfo
     });
+
     mediator.publish("assertion_generated", { assertion: null });
 
-    equal(actions.called.doPickEmail, true, "doPickEmail callled");
-    equal(actions.info.doPickEmail.origin, "http://example.com", "hostname preserved");
-    equal(actions.info.doPickEmail.siteTOSPP, true, "siteTOSPP preserved");
+    testActionStarted("doPickEmail", {
+      rpInfo: rpInfo
+    });
   });
 
   test("add_email - call doAddEmail", function() {
@@ -540,20 +759,12 @@
     equal(actions.called.doAddEmail, true, "doAddEmail called");
   });
 
-  asyncTest("stage_email - first secondary email - call doSetPassword", function() {
-    mediator.publish("stage_email", {
-      complete: function() {
-        testActionStarted("doSetPassword");
-        start();
-      }
-    });
-  });
-
-
   asyncTest("stage_email - second secondary email - call doStageEmail", function() {
-    storage.addSecondaryEmail("testuser@testuser.com");
+    storage.addEmail("testuser@testuser.com");
+    xhr.setContextInfo("has_password", true);
 
     mediator.publish("stage_email", {
+      type: "secondary",
       complete: function() {
         equal(actions.called.doStageEmail, true, "doStageEmail called");
         start();
@@ -561,58 +772,65 @@
     });
   });
 
-  asyncTest("multiple calls to password_set for stage_email, simulate throttling - call doAddEmail with correct email for each", function() {
-    testStagingThrottledRetry("stage_email", "doStageEmail");
+
+  test("pick_email passes along rpInfo", function() {
+    var rpInfo = RpInfo.create({ origin: "https://testuser.com" });
+    mediator.publish("start", {
+      rpInfo: rpInfo
+    });
+
+    mediator.publish("pick_email");
+
+    testActionStarted("doPickEmail", {
+      rpInfo: rpInfo
+    });
   });
 
-
-  test("stage_reverify_email - call doStageReverifyEmail", function() {
-    mediator.publish("stage_reverify_email", { email: TEST_EMAIL });
-    testActionStarted("doStageReverifyEmail", { email: TEST_EMAIL });
-  });
-
-  asyncTest("reverify_email_staged to reverify_email_confirmed - call doConfirmReverifyEmail", function() {
-    testVerifyStagedAddress("reverify_email_staged", "reverify_email_confirmed", "doConfirmReverifyEmail");
-  });
-
-  asyncTest("window_unload - set the final KPIs", function() {
-    mediator.subscribe("kpi_data", function(msg, data) {
-      testHelpers.testKeysInObject(data, [
-        'number_emails', 'number_sites_signed_in', 'number_sites_remembered', 'orphaned'
-      ]);
+  asyncTest("new_user KPI for new users", function() {
+    mediator.subscribe("kpi_data", function(msg, info) {
+      equal(info.new_account, true);
       start();
     });
 
-    mediator.publish("window_unload");
+    // Sequence:
+    // 1. user types in unrecognized email address, is shown set password screen
+    // 2. user enters password
+    //
+    // Expect:
+    // kpi_data message with new_account: true
+    mediator.publish("new_user", { email: TEST_EMAIL });
   });
 
-  function testAuthenticateSpecifiedEmail(specified, expected) {
-    var options = {
-      email: TEST_EMAIL,
-      complete: function() {
-        testActionStarted("doAuthenticateWithRequiredEmail", {
-          cancelable: expected
-        });
-        start();
-      }
-    };
+  asyncTest("new_user KPI for new FirefoxOS users", function() {
+    mediator.subscribe("kpi_data", function(msg, info) {
+      equal(info.new_account, true);
+      start();
+    });
 
-    if (typeof specified !== "undefined") options.cancelable = specified;
-
-    mediator.publish("authenticate_specified_email", options);
-  }
-
-  asyncTest("authenticate_specified_email with false specified - call doAuthenticateWithRequiredEmail using specified cancelable", function() {
-    testAuthenticateSpecifiedEmail(false, false);
+    // Sequence:
+    // 1. user types in unrecognized email address, is shown set password screen
+    // 2. user enters password
+    //
+    // Expect:
+    // kpi_data message with new_account: true
+    mediator.publish("new_fxaccount", { email: TEST_EMAIL });
   });
 
-  asyncTest("authenticate_specified_email with true specified - call doAuthenticateWithRequiredEmail using specified cancelable", function() {
-    testAuthenticateSpecifiedEmail(true, true);
+  asyncTest("new_user KPI set to `false` when user hits 'cancel' " +
+      "from set_password screen", function() {
+    // Sequence:
+    // 1. user types in unrecognized email address, is shown set password screen
+    // 2. user clicks "cancel" button
+    //
+    // Expect:
+    // kpi_data message with new_account: false
+    mediator.publish("new_user", { email: TEST_EMAIL });
+
+    mediator.subscribe("kpi_data", function(msg, info) {
+      equal(info.new_account, false);
+      start();
+    });
+
+    mediator.publish("cancel_state");
   });
-
-  asyncTest("authenticate_specified_email without cancelable - call doAuthenticateWithRequiredEmail, cancelable defaults to true", function() {
-    testAuthenticateSpecifiedEmail(undefined, true);
-  });
-
-
 }());

@@ -9,6 +9,7 @@
  * a browserid deployment can support */
 
 require('../lib/baseExceptions').addExceptionHandler();
+var wsapi_client = require('../lib/wsapi_client');
 
 const winston = require('winston');
 
@@ -27,6 +28,9 @@ var argv = require('optimist')
 .alias('o', 'omit-static')
 .describe('o', 'when enabled, only dynamic WSAPI calls will be simulated, not static resource requests')
 .default('o', false)
+.alias('i', 'interaction-data')
+.describe('i', 'sort of like `data_sample_rate` (set to 0 to send nothing)')
+.default('i', 0.1)
 .alias('s', 'server')
 .string('s')
 .describe('s', 'base URL to browserid server')
@@ -99,6 +103,12 @@ var activity = {
   "change_pass": {
     // users change their passwords once every two months
     probability: (1.0 / (40 * 56))
+  },
+  "interaction_data" : {
+    // post interaction data to KPI server
+    // All non-include_only activities have the potential
+    // to send interaction_data, multiply by sample rate
+    probability: (9 / 40.0) * args.i
   }
 };
 
@@ -204,13 +214,12 @@ function poll() {
         outstanding[act]--;
         if (undefined === completed[act]) completed[act] = [ 0, 0, 0 ];
         if (err) {
-          if (typeof err != 'string') err = err.toString();
-          if (err.indexOf('server is too busy') != -1) {
+          if (err.code === 'serverTooBusy') {
             completed[act][2]++;
           } else {
             completed[act][1]++;
-            winston.error('('+act+') ' + err);
           }
+          winston.error('('+act+') ' + err.toString());
         } else {
           completed[act][0]++;
         }
@@ -256,12 +265,14 @@ function poll() {
     });
     actSumString += " (" + actNums.join(' ') + ")";
 
-    console.log("\t", averages[0].toFixed(2),
+    console.log("[" + wsapi_client.recentLatency().toFixed(0) + "ms]",
+                averages[0].toFixed(2),
                 "\t", averages[1].toFixed(2),
                 "\t", averages[2].toFixed(2),
                 "\t", actSumString,
                 "\t", numErrors ? "(" + numErrors + " ERRORS!)" : "",
-                "\t", num503s ? " (" + num503s + " 503s)" : "");
+                "\t", num503s ? " (" + num503s + " 503s)" : ""
+               );
   }
 
   // ** how much time has elapsed since the last poll?

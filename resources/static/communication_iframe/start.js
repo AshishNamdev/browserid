@@ -6,7 +6,8 @@
   var bid = BrowserID,
       network = bid.Network,
       user = bid.User,
-      storage = bid.Storage;
+      storage = bid.Storage,
+      interactionData = bid.Models.InteractionData;
 
   // Initialize all localstorage values to default values.  Neccesary for
   // proper sync of IE8 localStorage across multiple simultaneous
@@ -14,15 +15,7 @@
   storage.setDefaultValues();
 
   network.init();
-
-  // Do not check to see if cookies are supported in the iframe.  Just
-  // optimistically try to work by running network requests.  There are
-  // cases (especially in IE) where our checks will fail but our actual
-  // requests will not.  issue #2183
-  // (NOTE: if we want to try to improve failure modes for users with
-  //  a "disable 3rd party cookies"-like preference set in their browser,
-  //  we may need to re-visit this)
-  network.cookiesEnabledOverride = true;
+  user.init();
 
   var chan = Channel.build({
     window: window.parent,
@@ -35,7 +28,15 @@
   function setRemoteOrigin(o) {
     if (!remoteOrigin) {
       remoteOrigin = o;
-      user.setOrigin(remoteOrigin);
+      var options = {
+        origin: remoteOrigin
+      };
+
+      var issuer = storage.site.get(remoteOrigin, "issuer");
+      if (issuer) options.issuer = issuer;
+
+      var rpInfo = bid.Models.RpInfo.create(options);
+      user.setRpInfo(rpInfo);
     }
   }
 
@@ -48,27 +49,61 @@
   function checkAndEmit(oncomplete) {
     if (pause) return;
 
-    // this will re-certify the user if neccesary
-    user.getSilentAssertion(loggedInUser, function(email, assertion) {
-      if (email) {
-        // only send login events when the assertion is defined - when
-        // the 'loggedInUser' is already logged in, it's false - that is
-        // when the site already has the user logged in and does not want
-        // the resources or cost required to generate an assertion
-        if (assertion) chan.notify({ method: 'login', params: assertion });
-        loggedInUser = email;
-      } else if (loggedInUser !== null) {
-        // only send logout events when loggedInUser is not null, which is an
-        // indicator that the site thinks the user is logged out
-        chan.notify({ method: 'logout' });
-        loggedInUser = null;
-      }
-      oncomplete && oncomplete();
-    }, function(err) {
+    function onError() {
       chan.notify({ method: 'logout' });
       loggedInUser = null;
       oncomplete && oncomplete();
-    });
+    }
+
+    // All XHR requests are aborted when the user browsers away from the RP.
+    // Outstanding calls to cookiesEnabled (which calls /wsapi/session_context)
+    // will be aborted, the onError callback will not be invoked. All other XHR
+    // errors will call onError. See issues #2423, #3619
+    network.cookiesEnabled(function(enabled) {
+      if (!enabled) {
+        // cookies are disabled, call onready and do nothing more.
+        // By not setting loggedInUser to null, the RP can call .logout
+        // a single time and have the .onlogout callback fired, which in
+        // turn allows the RP to sign the user out of their site.
+        return oncomplete && oncomplete();
+      }
+
+      // iOS7 has new privacy settings which prevent the communication iframe
+      // from working.  We can retain *some* semantics, but not all.  We cannot
+      // read local storage, so we cannot generate assertions.  We do have access to
+      // cookies, however, so we can log users out.
+      if (!storage.storageCheck.get()) {
+        user.checkAuthentication(function(authenticated) {
+          if ((loggedInUser === undefined || loggedInUser) && !authenticated) {
+            chan.notify({ method: 'logout' });
+            loggedInUser = null;
+          } else if (loggedInUser === null && !authenticated) {
+            chan.notify({ method: 'match' });
+          }
+          oncomplete && oncomplete();
+        });
+      } else {
+        // this will re-certify the user if neccesary
+        user.getSilentAssertion(loggedInUser, function(email, assertion) {
+          if (loggedInUser === email) {
+            chan.notify({ method: 'match' });
+          } else if (email) {
+            // only send login events when the assertion is defined - when
+            // the 'loggedInUser' is already logged in, it's false - that is
+            // when the site already has the user logged in and does not want
+            // the resources or cost required to generate an assertion
+            if (assertion) chan.notify({ method: 'login', params: assertion });
+            loggedInUser = email;
+          } else if (loggedInUser !== null) {
+            // only send logout events when loggedInUser is not null, which is an
+            // indicator that the site thinks the user is logged out
+            chan.notify({ method: 'logout' });
+            loggedInUser = null;
+          }
+          oncomplete && oncomplete();
+        }, onError);
+      }
+    }, onError);
   }
 
   function watchState() {
@@ -92,21 +127,60 @@
   });
 
   chan.bind("logout", function(trans, params) {
-    if (loggedInUser != null) {
-      storage.setLoggedIn(remoteOrigin, false);
+    // set remote origin so that .logout can be called even if .request has
+    // not.
+    // See https://github.com/mozilla/browserid/pull/2529
+    setRemoteOrigin(trans.origin);
+    // loggedInUser will be undefined if none of loaded, loggedInUser nor
+    // logout have been called before. This allows the user to be force logged
+    // out.
+    if (loggedInUser !== null) {
+      storage.site.remove(remoteOrigin, "logged_in");
+      loggedInUser = null;
       chan.notify({ method: 'logout' });
     }
+  });
+
+  chan.bind("redirect_flow", function(trans, params) {
+    setRemoteOrigin(trans.origin);
+    storage.rpRequest.set({
+      origin: remoteOrigin,
+      params: JSON.parse(params)
+    });
+    return true;
   });
 
   chan.bind("dialog_running", function(trans, params) {
     pause = true;
   });
 
-  chan.bind("dialog_complete", function(trans, params) {
+  chan.bind("dialog_complete", function(trans, checkAuthStatus) {
     pause = false;
-    // the dialog running can change authentication status,
-    // lets manually purge our network cache
-    network.clearContext();
-    checkAndEmit();
+    // The dialog has closed, so that we get results from users who only open
+    // the dialog a single time, send the KPIs immediately. Note, this does not
+    // take care of native contexts. Native contexts are taken care of in in
+    // dialog/js/misc/internal_api.js. Errors sending the KPI data should not
+    // affect anything else.
+    try {
+      var currentData = interactionData.getCurrent();
+      if (currentData) {
+        // set the last KPIs from the current state of the world.
+        _.extend(currentData, {
+          number_emails: storage.getEmailCount() || 0,
+          number_sites_signed_in: storage.loggedInCount() || 0,
+          number_sites_remembered: storage.site.count() || 0
+        });
+
+        interactionData.setCurrent(currentData);
+        interactionData.publishCurrent();
+      }
+    } catch(e) {}
+
+    if (checkAuthStatus) {
+      // the dialog running can change authentication status,
+      // lets manually purge our network cache
+      user.clearContext();
+      checkAndEmit();
+    }
   });
 }());

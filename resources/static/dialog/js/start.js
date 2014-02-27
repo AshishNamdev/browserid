@@ -3,22 +3,34 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 (function() {
+  "use strict";
+
   var bid = BrowserID,
       moduleManager = bid.module,
       modules = bid.Modules,
+      user = bid.User,
       network = bid.Network,
-      xhr = bid.XHR;
+      mediator = bid.Mediator,
+      storage = bid.Storage;
 
+  // issue #3905, set a bit in localStorage, we will use this to determine
+  // if we can read local storage from the comm iframe
+  storage.storageCheck.set();
 
-  // A request that takes more than 10 seconds is considered delayed.
-  xhr.init({ time_until_delay: 10 * 1000 });
   network.init();
+  user.init();
 
   var hash = window.location.hash || "",
       continuation = hash.indexOf("#AUTH_RETURN") > -1;
 
   moduleManager.register("interaction_data", modules.InteractionData);
   moduleManager.start("interaction_data", { continuation: continuation });
+
+  // DOM_LOADING is only set if preffed on on the server.
+  var domLoading = bid.DOM_LOADING;
+  if (domLoading) {
+    mediator.publish("dom_loading", { eventTime: domLoading });
+  }
 
   moduleManager.register("development", modules.Development);
   moduleManager.start("development");
@@ -34,20 +46,24 @@
       moduleManager.register("check_registration", modules.CheckRegistration);
       moduleManager.register("is_this_your_computer", modules.IsThisYourComputer);
       moduleManager.register("pick_email", modules.PickEmail);
-      moduleManager.register("required_email", modules.RequiredEmail);
       moduleManager.register("verify_primary_user", modules.VerifyPrimaryUser);
       moduleManager.register("provision_primary_user", modules.ProvisionPrimaryUser);
       moduleManager.register("primary_user_provisioned", modules.PrimaryUserProvisioned);
+      moduleManager.register("primary_user_not_provisioned", modules.PrimaryUserNotProvisioned);
+      moduleManager.register("primary_offline", modules.PrimaryOffline);
       moduleManager.register("generate_assertion", modules.GenerateAssertion);
       moduleManager.register("xhr_delay", modules.XHRDelay);
       moduleManager.register("xhr_disable_form", modules.XHRDisableForm);
       moduleManager.register("set_password", modules.SetPassword);
       moduleManager.register("rp_info", modules.RPInfo);
+      moduleManager.register("inline_tospp", modules.InlineTosPp);
+      moduleManager.register("complete_sign_in", modules.CompleteSignIn);
 
       moduleManager.start("xhr_delay");
       moduleManager.start("xhr_disable_form");
       moduleManager.start("dialog");
+      moduleManager.start("inline_tospp");
     }
   });
-}());
 
+}());

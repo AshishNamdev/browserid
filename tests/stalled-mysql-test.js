@@ -83,16 +83,15 @@ suite.addBatch({
       assert.strictEqual(r.code, 500);
     }
   },
-  "address_info": {
+  "address_info with primary address": {
     topic: wsapi.get('/wsapi/address_info', {
       email: 'test@example.domain'
     }),
-    "works": function(err, r) {
-      // address info with a primary address doesn't need db access.
-      assert.strictEqual(r.code, 200);
+    "fails with 503": function(err, r) {
+      assert.strictEqual(r.code, 503);
     }
   },
-  "address_info": {
+  "address_info with non-existant domain": {
     topic: wsapi.get('/wsapi/address_info', {
       email: 'test@non-existant.domain'
     }),
@@ -160,7 +159,7 @@ suite.addBatch({
 // is stalled
 addStallDriverBatch(false);
 
-var token = undefined;
+token = undefined;
 
 suite.addBatch({
   "ping": {
@@ -190,11 +189,12 @@ suite.addBatch({
     topic: function() {
       start_stop.waitForToken(this.callback);
     },
-    "is obtained": function (t) {
+    "is obtained": function (err, t) {
+      assert.isNull(err);
       assert.strictEqual(typeof t, 'string');
     },
     "setting password": {
-      topic: function(token) {
+      topic: function(err, token) {
         wsapi.post('/wsapi/complete_user_creation', {
           token: token
         }).call(this);

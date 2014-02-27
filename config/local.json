@@ -13,8 +13,17 @@
   "express_log_format": "dev_bid",
   "email_to_console": true,
   "env": "local",
-  "kpi_backend_sample_rate": 1.0,
+  "kpi": {
+    "backend_sample_rate": 1.0
+  },
+
+  // increase to tolerate slower server responses; useful for testing
+  "maximum_event_loop_lag": 100,
 
   // whether to show the development menu.
-  "enable_development_menu": true
+  "enable_development_menu": true,
+
+  // enable the measurement of the dom loading
+  "measure_dom_loading": true,
+  "forcible_issuers": ["issuer.domain"]
 }

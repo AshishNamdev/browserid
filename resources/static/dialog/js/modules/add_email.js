@@ -13,7 +13,11 @@ BrowserID.Modules.AddEmail = (function() {
       complete = helpers.complete,
       tooltip = bid.Tooltip,
       hints = ["addressInfo"],
-      ANIMATION_TIME = 250;
+      ANIMATION_TIME = 250,
+      BODY_SELECTOR = "body",
+      EMAIL_SELECTOR = "#newEmail",
+      SUBMIT_DISABLED_CLASS = "submit_disabled",
+      CANCEL_SELECTOR = "#cancel";
 
   function hideHint(selector) {
     $("." + selector).hide();
@@ -34,13 +38,24 @@ BrowserID.Modules.AddEmail = (function() {
 
   function addEmail(callback) {
     /*jshint validthis:true*/
-    var email = helpers.getAndValidateEmail("#newEmail"),
+    var email = helpers.getAndValidateEmail(EMAIL_SELECTOR),
         self=this;
 
     if (email) {
       showHint("addressInfo");
+
+      dom.setAttr(EMAIL_SELECTOR, 'disabled', 'disabled');
+      dom.addClass(BODY_SELECTOR, SUBMIT_DISABLED_CLASS);
+
       dialogHelpers.addEmail.call(self, email, function removeHint(status) {
         hideHint("addressInfo");
+
+        // !status means there was a problem adding the email. Let the user
+        // modify the email address and try to re-add.
+        if (!status) {
+          dom.removeAttr(EMAIL_SELECTOR, 'disabled');
+          dom.removeClass(BODY_SELECTOR, SUBMIT_DISABLED_CLASS);
+        }
         complete(callback, status);
       });
     }
@@ -60,10 +75,10 @@ BrowserID.Modules.AddEmail = (function() {
       var self=this,
           originEmail = user.getOriginEmail();
 
-      self.renderDialog("add_email", options);
+      self.renderForm("add_email", options);
       hideHint("addressInfo");
 
-      self.click("#cancel", cancelAddEmail);
+      self.click(CANCEL_SELECTOR, cancelAddEmail);
       Module.sc.start.call(self, options);
     },
     submit: addEmail

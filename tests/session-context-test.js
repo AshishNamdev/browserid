@@ -11,7 +11,6 @@ require('assert'),
 vows = require('vows'),
 start_stop = require('./lib/start-stop.js'),
 wsapi = require('./lib/wsapi.js'),
-db = require('../lib/db.js'),
 config = require('../lib/configuration.js');
 
 var suite = vows.describe('session-context');
@@ -46,7 +45,8 @@ suite.addBatch({
     topic: function() {
       start_stop.waitForToken(this.callback);
     },
-    "is obtained": function (t) {
+    "is obtained": function (err, t) {
+      assert.isNull(err);
       assert.strictEqual(typeof t, 'string');
       token = t;
     }
@@ -98,6 +98,44 @@ suite.addBatch({
     }
   }
 });
+
+suite.addBatch({
+  "code version mismatch using session_context API": {
+    topic: wsapi.get('/wsapi/session_context', {}, {
+      headers: {
+        "BrowserID-git-sha": "INVALID_SHA"
+      }
+    }),
+    "will still respond correctly": function (err, r) {
+      assert.equal(r.code, 200);
+    }
+  }
+});
+
+suite.addBatch({
+  "cookie check using session_context": {
+    "with can_set_cookie cookie": {
+      topic: wsapi.get('/wsapi/session_context', {}, {
+        cookieJar: {
+          "can_set_cookies": "1"
+        }
+      }),
+      "responds with 'cookies=true' in response": function (err, r) {
+        var body = JSON.parse(r.body);
+        assert.equal(body.cookies, true);
+      }
+    },
+    "without can_set_cookie_cookies": {
+      topic: wsapi.get('/wsapi/session_context', {}, {
+      }),
+      "responds with 'cookies=false' in response": function (err, r) {
+        var body = JSON.parse(r.body);
+        assert.equal(body.cookies, false);
+      }
+    }
+  }
+});
+
 
 start_stop.addShutdownBatches(suite);
 
